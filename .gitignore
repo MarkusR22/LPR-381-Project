@@ -1,0 +1,53 @@
+# Build results
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code
+.vscode/
+
+# Visual Studio files
+.vs/
+
+# ReSharper
+*.DotSettings.user
+
+# Windows thumbnail cache
+Thumbs.db
+
+# macOS
+.DS_Store
+
+# Input/Output test files (optional to ignore if temporary)
+Input/*.tmp
+Output/*.tmp
+
+# Logs
+*.log
+
+# Other common ignores
+*.db
+*.cache
+*.pid
+*.zip
+*.7z
+*.tar
+*.gz
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+project.lock.json
+project.fragment.lock.json
+
+# Rider IDE (if anyone uses JetBrains)
+.idea/
