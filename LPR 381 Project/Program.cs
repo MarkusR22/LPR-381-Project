@@ -1,9 +1,11 @@
-﻿using System;
+﻿using LPR_381_Project.Models;
+using LPR_381_Project.Solvers;
+using LPR_381_Project.Utils;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using LPR_381_Project.Solvers;
 
 namespace LPR_381_Project
 {
@@ -12,7 +14,10 @@ namespace LPR_381_Project
         static void Main(string[] args)
         {
             TestDual();
-            
+            // --- Primal and Revised Simplex test using Korean Auto LP ---
+            Console.WriteLine("\n--- Testing Primal and Revised Simplex ---");
+            TestPrimalAndRevised();
+
         }
 
         static void TestDual()
@@ -46,10 +51,57 @@ namespace LPR_381_Project
             {
                 for (int j = 0; j < cols; j++)
                 {
-                    Console.Write($"{tableau[i, j],8:0.###} "); 
+                    Console.Write($"{tableau[i, j],8:0.###} ");
                 }
                 Console.WriteLine();
             }
         }
+
+        static void TestPrimalAndRevised()
+        {
+            // Build LinearModel for Korean Auto LP
+            var model = new Models.LinearModel
+            {
+                Obj = Models.Objective.Maximize
+            };
+
+            // Variables: x1 (comedy), x2 (football)
+            model.Variables.Add(new Models.Variable("x1", 50, Models.VarType.Positive));
+            model.Variables.Add(new Models.Variable("x2", 100, Models.VarType.Positive));
+
+            // Constraints
+            model.Constraints.Add(new Models.Constraint(
+                new List<double> { 7, 2 }, Models.Relation.GreaterThanOrEqual, 28));
+            model.Constraints.Add(new Models.Constraint(
+                new List<double> { 2, 12 }, Models.Relation.GreaterThanOrEqual, 24));
+
+            // Solve with Primal Simplex
+            var primalSolver = new PrimalSimplexSolver();
+            var primalIterations = primalSolver.Solve(model);
+            Console.WriteLine("\nPrimal Simplex Iterations:");
+            PrintIterations(primalIterations);
+
+            // Solve with Revised Simplex
+            var revisedSolver = new RevisedSimplexSolver();
+            var revisedIterations = revisedSolver.Solve(model);
+            Console.WriteLine("\nRevised Simplex Iterations:");
+            PrintIterations(revisedIterations);
+        }
+
+
+        // Helper to print all iterations
+        static void PrintIterations(List<double[,]> iterations)
+        {
+            for (int i = 0; i < iterations.Count; i++)
+            {
+                Console.WriteLine($"--- Iteration {i} ---");
+                PrintTableau(iterations[i]);
+                Console.WriteLine();
+            }
+        }
+
+
     }
+
 }
+
