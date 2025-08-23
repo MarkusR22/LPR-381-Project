@@ -4,6 +4,7 @@ using LPR_381_Project.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.Remoting.Messaging;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -13,11 +14,52 @@ namespace LPR_381_Project
     {
         static void Main(string[] args)
         {
+            //Testing Dual Simplex Method
+            Console.WriteLine("This is Dual:");
             TestDual();
+            Console.WriteLine("=================================================");
+
+
+            //Testing Knapsack Method
+            Console.WriteLine("This is Knapsack:");
+            TestKnapsack();
+            Console.WriteLine("=================================================");
+
+
             // --- Primal and Revised Simplex test using Korean Auto LP ---
             Console.WriteLine("\n--- Testing Primal and Revised Simplex ---");
             TestPrimalAndRevised();
 
+            
+
+            
+        }
+
+        static void TestKnapsack()
+        {
+            //Problem from Assignment
+            int capacity = 40;
+            int[] z = { 2, 3, 3, 5, 2, 4 };
+            int[] c = { 11, 8, 6, 14, 10, 10 };
+
+            BnBKnapsack knapsack = new BnBKnapsack(capacity, z, c);
+
+            foreach (var node in knapsack.Solve())
+            {
+                Console.WriteLine(node.ToString());
+                Console.WriteLine();
+            } 
+
+            var best = knapsack.GetBestCandidate();
+            if (best != null)
+            {
+                Console.WriteLine("Best candidate found:");
+                Console.WriteLine(best.ToString());
+            }
+            else
+            {
+                Console.WriteLine("No feasible candidate found.");
+            }
         }
 
         static void TestDual()

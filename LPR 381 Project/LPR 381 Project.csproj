@@ -58,6 +58,8 @@
     <Compile Include="Solvers\RevisedSimplexSolver.cs" />
     <Compile Include="Utils\MathUtils.cs" />
     <Compile Include="Utils\OutputWriter.cs" />
+    <Compile Include="Solvers\BnBKnapsack.cs" />
+    <Compile Include="Solvers\KnapsackNode.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include=".vs\LPR 381 Project.csproj.dtbcache.json" />
