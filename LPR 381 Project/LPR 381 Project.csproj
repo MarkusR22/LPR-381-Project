@@ -48,7 +48,6 @@
     <Compile Include="Models\Constraint.cs" />
     <Compile Include="Models\LinearModel.cs" />
     <Compile Include="Models\Variable.cs" />
-    <Compile Include="obj\Debug\.NETFramework,Version=v4.8.AssemblyAttributes.cs" />
     <Compile Include="Parsers\InputFileParser.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

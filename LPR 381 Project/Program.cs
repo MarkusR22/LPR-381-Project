@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.Remoting.Messaging;
 using System.Text;
 using System.Threading.Tasks;
+using System.IO;
 
 namespace LPR_381_Project
 {
@@ -42,26 +43,64 @@ namespace LPR_381_Project
 
         static void TestCuttingPlane()
         {
-            double[,] initialT =
-                {
-            //Korean Auto LP
-            { -50, -100, 0, 0, 0 },
-            { -7, -2, 1, 0, -28 },
-            { -2, -12, 0, 1, -24 },
-        };
-
-            var dual = new DualSimplex();
-
-            var iterations = dual.Solve(initialT);
-
-            for (int i = 0; i < iterations.Count; i++)
+            // 1) Decide input path (arg0 or default "input.txt")
+            string inputPath = Path.Combine("Input", "sample.txt");
+            if (!File.Exists(inputPath))
             {
-                Console.WriteLine($"--- Iteration {i} ---");
-                PrintTableau(iterations[i]);
-                Console.WriteLine();
+                Console.WriteLine($"Input file not found: {inputPath}");
+                return;
             }
 
+            // 2) Read lines in the brief’s format (first token is 'max' or 'min')
+            string[] lines = File.ReadAllLines(inputPath);
+
+            // 3) Solve with Cutting Plane (auto-supports max/min inside SolveFromBriefFormat)
+            var solver = new LPR_381_Project.Solvers.CuttingPlane();
+            var result = solver.SolveFromBriefFormat(lines);
+
+            // 4) Console summary
+            Console.WriteLine("=== Cutting Plane Result ===");
+            Console.WriteLine($"Z* = {result.ZOpt:0.###}");
+            Console.WriteLine("x* = " + string.Join(", ", result.XOpt.Select(v => v.ToString("0.###"))));
+            Console.WriteLine($"Cuts added: {result.CutsAdded}");
+
+            // 5) Full output file (logs + tableaus)
+            string outputPath = Path.Combine("Output", "output.txt");
+            using (var sw = new StreamWriter(outputPath))
+            {
+                sw.WriteLine("=== Cutting Plane Solver Output ===");
+                sw.WriteLine($"Z* = {result.ZOpt:0.###}");
+                sw.WriteLine("x* = " + string.Join(", ", result.XOpt.Select(v => v.ToString("0.###"))));
+                sw.WriteLine($"Cuts added: {result.CutsAdded}");
+                sw.WriteLine();
+
+                sw.WriteLine("=== Iteration Log ===");
+                foreach (var log in result.Logs) sw.WriteLine(log);
+
+                sw.WriteLine();
+                sw.WriteLine("=== Tableaus ===");
+                for (int k = 0; k < result.Tableaus.Count; k++)
+                {
+                    sw.WriteLine($"-- Tableau {k} --");
+                    PrintTableau(result.Tableaus[k], sw);
+                    sw.WriteLine();
+                }
+            }
+
+            Console.WriteLine($"Full details written to {outputPath}");
         }
+
+        static void PrintTableau(double[,] T, TextWriter w)
+        {
+            int r = T.GetLength(0), c = T.GetLength(1);
+            for (int i = 0; i < r; i++)
+            {
+                for (int j = 0; j < c; j++) w.Write($"{T[i, j],8:0.###} ");
+                w.WriteLine();
+            }
+        }
+
+        
 
         static void TestKnapsack()
         {

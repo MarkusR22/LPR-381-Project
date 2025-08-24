@@ -7,7 +7,7 @@ using System.Globalization;
 
 namespace LPR_381_Project.Solvers
 {
-    internal class CuttingPlane
+    public class CuttingPlane
     {
         public class Result
         {
