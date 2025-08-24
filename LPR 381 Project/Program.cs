@@ -43,30 +43,33 @@ namespace LPR_381_Project
 
         static void TestCuttingPlane()
         {
-            // 1) Decide input path (arg0 or default "input.txt")
-            string inputPath = Path.Combine("Input", "sample.txt");
+            string projectRoot = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", ".."));
+            string inputPath = Path.Combine(projectRoot, "Input", "sample.txt");
             if (!File.Exists(inputPath))
             {
                 Console.WriteLine($"Input file not found: {inputPath}");
                 return;
             }
 
-            // 2) Read lines in the brief’s format (first token is 'max' or 'min')
+            Console.WriteLine("Reading: " + Path.GetFullPath(inputPath));
             string[] lines = File.ReadAllLines(inputPath);
+            Console.WriteLine("(debug) file contents:");
+            for (int i = 0; i < lines.Length; i++)
+                Console.WriteLine($"[{i + 1}] {lines[i]}");
 
-            // 3) Solve with Cutting Plane (auto-supports max/min inside SolveFromBriefFormat)
-            var solver = new LPR_381_Project.Solvers.CuttingPlane();
+            var solver = new CuttingPlane();
             var result = solver.SolveFromBriefFormat(lines);
+            Console.WriteLine($"(debug) read {lines.Length} raw lines from {inputPath}");
 
-            // 4) Console summary
             Console.WriteLine("=== Cutting Plane Result ===");
             Console.WriteLine($"Z* = {result.ZOpt:0.###}");
             Console.WriteLine("x* = " + string.Join(", ", result.XOpt.Select(v => v.ToString("0.###"))));
             Console.WriteLine($"Cuts added: {result.CutsAdded}");
 
-            // 5) Full output file (logs + tableaus)
-            string outputPath = Path.Combine("Output", "output.txt");
-            using (var sw = new StreamWriter(outputPath))
+            // Project root -> Output\output.txt
+            string outputPath = Path.Combine(projectRoot, "Output", "output.txt");
+
+            using (var sw = new StreamWriter(outputPath, false, Encoding.UTF8))
             {
                 sw.WriteLine("=== Cutting Plane Solver Output ===");
                 sw.WriteLine($"Z* = {result.ZOpt:0.###}");
@@ -75,20 +78,28 @@ namespace LPR_381_Project
                 sw.WriteLine();
 
                 sw.WriteLine("=== Iteration Log ===");
-                foreach (var log in result.Logs) sw.WriteLine(log);
+                foreach (var log in result.Logs ?? Enumerable.Empty<string>())
+                    sw.WriteLine(log);
 
                 sw.WriteLine();
                 sw.WriteLine("=== Tableaus ===");
-                for (int k = 0; k < result.Tableaus.Count; k++)
+                if (result.Tableaus != null)
                 {
-                    sw.WriteLine($"-- Tableau {k} --");
-                    PrintTableau(result.Tableaus[k], sw);
-                    sw.WriteLine();
+                    for (int k = 0; k < result.Tableaus.Count; k++)
+                    {
+                        sw.WriteLine($"-- Tableau {k} --");
+                        PrintTableau(result.Tableaus[k], sw);
+                        sw.WriteLine();
+                    }
                 }
+                sw.Flush(); // force write now
             }
 
-            Console.WriteLine($"Full details written to {outputPath}");
+            // Prove bytes exist
+            long len = new FileInfo(outputPath).Length;
+            Console.WriteLine($"Wrote {len} bytes to: {outputPath}");
         }
+
 
         static void PrintTableau(double[,] T, TextWriter w)
         {

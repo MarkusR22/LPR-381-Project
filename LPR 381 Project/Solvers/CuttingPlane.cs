@@ -36,8 +36,7 @@ namespace LPR_381_Project.Solvers
             if (b.Length != m) throw new ArgumentException("b length ≠ rows(A)");
             if (c.Length != n) throw new ArgumentException("c length ≠ cols(A)");
             if (isInteger.Length != n) throw new ArgumentException("isInteger length ≠ cols(A)");
-            for (int i = 0; i < m; i++) if (b[i] < -Tolerance) throw new ArgumentException("RHS b must be ≥ 0 for initial primal BFS. Preprocess rows.");
-
+            
 
             int cols = n + m + 1; // vars + slacks + RHS
             double[,] T = new double[m + 1, cols];
@@ -60,8 +59,25 @@ namespace LPR_381_Project.Solvers
             var logs = new List<string>();
 
 
+            // If any RHS is negative, use Dual Simplex to restore feasibility
+            bool hasNegativeRhs = false;
+            int rowsT = T.GetLength(0), colsT = T.GetLength(1);
+            for (int i = 1; i < rowsT; i++)
+            {
+                if (T[i, colsT - 1] < -Tolerance) { hasNegativeRhs = true; break; }
+            }
+
+            if (hasNegativeRhs)
+            {
+                // Log and fix feasibility first
+                logs.Add("=== INITIAL DUAL SIMPLEX: fixing negative RHS ===");
+                RunDualSimplex(T, basis, allTableaus, logs);
+            }
+
+            // proceed with LP relaxation using Primal Simplex
             logs.Add("=== PRIMAL SIMPLEX: LP relaxation ===");
             RunPrimalSimplex(T, basis, allTableaus, logs);
+
 
 
             int cuts = 0;
@@ -403,50 +419,136 @@ namespace LPR_381_Project.Solvers
 
 
         // Quick parser for the brief's example format
-        public Result SolveFromBriefFormat(string[] lines)
+        // Robust parser that accepts "<= 40" and "<=40" (and >=, =<, =>)
+        // C# 7.3 compatible (no index-from-end operator and no newer features)
+        public Result SolveFromBriefFormat(string[] rawLines)
         {
-            lines = lines.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToArray();
-            if (lines.Length < 3) throw new ArgumentException("Need at least 3 lines: objective, ≥1 constraint, sign row");
+            if (rawLines == null || rawLines.Length == 0)
+                throw new ArgumentException("Input is empty.");
 
-
-            var objTokens = lines[0].Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            bool isMax = objTokens[0].Equals("max", StringComparison.OrdinalIgnoreCase);
-            int n = objTokens.Length - 1;
-            var c = new double[n];
-            for (int j = 0; j < n; j++) c[j] = ParseSigned(objTokens[j + 1]);
-
-
-            var signTokens = lines[lines.Length - 1].Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (signTokens.Length != n) throw new ArgumentException("Sign row must have one token per variable.");
-            var isInt = signTokens.Select(tok => tok.Equals("bin", StringComparison.OrdinalIgnoreCase) || tok.Equals("int", StringComparison.OrdinalIgnoreCase)).ToArray();
-
-
-            var constr = new List<double[]>();
-            var rhsList = new List<double>();
-            for (int i = 1; i < lines.Length - 1; i++)
+            // Normalize: trim, drop blanks and comment lines
+            var normalized = new List<Tuple<string, int>>(); // (line, originalLineNumber)
+            for (int i = 0; i < rawLines.Length; i++)
             {
-                var tks = lines[i].Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-                var coeffs = new double[n];
-                for (int j = 0; j < n; j++) coeffs[j] = ParseSigned(tks[j]);
-                string rel = tks[n];
-                double rhsVal = double.Parse(tks[n + 1], CultureInfo.InvariantCulture);
-
-
-                if (rel == ">=") { for (int j = 0; j < n; j++) coeffs[j] *= -1; rhsVal *= -1; rel = "<="; }
-                if (rel != "<=") throw new NotSupportedException("Quick parser supports <= only (or >= which is flipped). Use your general parser otherwise.");
-                constr.Add(coeffs); rhsList.Add(rhsVal);
+                string s = (rawLines[i] ?? "").Trim();
+                if (s.Length == 0) continue;
+                if (s.StartsWith("#") || s.StartsWith("//")) continue;
+                normalized.Add(Tuple.Create(s, i + 1));
             }
 
+            if (normalized.Count < 3)
+                throw new ArgumentException("Need at least 3 non-empty lines: objective, one constraint, and the sign row.");
+
+            // Objective
+            string[] obj = normalized[0].Item1.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (obj.Length < 2)
+                throw new FormatException("Objective line must be: 'max|min c1 c2 ...'.");
+
+            bool isMax = string.Equals(obj[0], "max", StringComparison.OrdinalIgnoreCase);
+            bool isMin = string.Equals(obj[0], "min", StringComparison.OrdinalIgnoreCase);
+            if (!isMax && !isMin)
+                throw new FormatException("Objective line must start with 'max' or 'min'.");
+
+            int n = obj.Length - 1;
+            var c = new double[n];
+            for (int j = 0; j < n; j++) c[j] = ParseSigned(obj[j + 1]);
+
+            // Sign row is the last normalized line (no [^1] usage)
+            int lastIdx = normalized.Count - 1;
+            string[] sign = normalized[lastIdx].Item1.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (sign.Length != n)
+                throw new FormatException("Sign row must have exactly the same number of tokens as variables.");
+
+            var isInt = new bool[n];
+            for (int j = 0; j < n; j++)
+            {
+                string tok = sign[j].ToLowerInvariant();
+                isInt[j] = (tok == "int" || tok == "bin"); // others treated as continuous here
+            }
+
+            // Constraints: lines 1 .. lastIdx-1
+            var constr = new List<double[]>();
+            var rhsList = new List<double>();
+            for (int k = 1; k <= lastIdx - 1; k++)
+            {
+                string s = normalized[k].Item1;
+                int originalLine = normalized[k].Item2;
+
+                var tks = s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (tks.Count < n + 1)
+                    throw new FormatException("Constraint must have n coeffs plus relation/RHS.");
+
+                // coefficients
+                var coeffs = new double[n];
+                for (int j = 0; j < n; j++) coeffs[j] = ParseSigned(tks[j]);
+
+                string rel;
+                string rhsTok;
+
+                if (tks.Count == n + 1)
+                {
+                    // Relation and RHS glued together, e.g. <=40 or =>-5
+                    SplitRelRhsCombined_CSharp7(tks[n], originalLine, out rel, out rhsTok);
+                }
+                else
+                {
+                    rel = tks[n];
+                    rhsTok = tks[n + 1];
+                }
+
+                // normalize =< and => typos
+                rel = rel.Replace("=<", "<=").Replace("=>", ">=");
+
+                if (rel != "<=" && rel != ">=" && rel != "=")
+                    throw new FormatException("Relation must be <=, >=, or =.");
+
+                double rhsVal;
+                if (!double.TryParse(rhsTok, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out rhsVal))
+                    throw new FormatException("RHS is not a valid number: '" + rhsTok + "'.");
+
+                if (rel == "=")
+                    throw new NotSupportedException("Equality '=' not supported in this quick parser; convert to two inequalities or preprocess.");
+
+                // Flip >= to <=
+                if (rel == ">=")
+                {
+                    for (int j = 0; j < n; j++) coeffs[j] *= -1;
+                    rhsVal *= -1;
+                }
+
+                constr.Add(coeffs);
+                rhsList.Add(rhsVal);
+            }
+
+            Console.WriteLine($"(debug) constraints parsed: {constr.Count}");
+
+            // Build A, b
             var A = new double[constr.Count, n];
-            for (int i = 0; i < constr.Count; i++) for (int j = 0; j < n; j++) A[i, j] = constr[i][j];
+            for (int i = 0; i < constr.Count; i++)
+                for (int j = 0; j < n; j++)
+                    A[i, j] = constr[i][j];
             var bArr = rhsList.ToArray();
 
+            // Min -> Max transform
+            if (isMin) { for (int j = 0; j < n; j++) c[j] *= -1; }
 
-            if (!isMax) { for (int j = 0; j < n; j++) c[j] *= -1; }
             var res = Solve(A, bArr, c, isInt);
-            if (!isMax) { res.ZOpt *= -1; }
+            if (isMin) res.ZOpt *= -1;
             return res;
         }
+
+        // C# 7.3-friendly helper (no tuples). Splits "<=40" / "=>-5" / "=10" into rel and rhs.
+        private static void SplitRelRhsCombined_CSharp7(string token, int lineNum, out string rel, out string rhs)
+        {
+            token = (token ?? "").Trim();
+            if (token.StartsWith("<=")) { rel = "<="; rhs = token.Substring(2); return; }
+            if (token.StartsWith("=<")) { rel = "<="; rhs = token.Substring(2); return; }
+            if (token.StartsWith(">=")) { rel = ">="; rhs = token.Substring(2); return; }
+            if (token.StartsWith("=>")) { rel = ">="; rhs = token.Substring(2); return; }
+            if (token.StartsWith("=")) { rel = "="; rhs = token.Substring(1); return; }
+            throw new FormatException("Could not parse relation/RHS on line " + lineNum + ": '" + token + "'. Expected forms like '<=40' or '>=-5'.");
+        }
+
 
 
         private static double ParseSigned(string token)

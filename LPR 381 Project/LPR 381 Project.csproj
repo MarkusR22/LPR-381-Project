@@ -59,6 +59,7 @@
     <Compile Include="Utils\OutputWriter.cs" />
     <Compile Include="Solvers\BnBKnapsack.cs" />
     <Compile Include="Solvers\KnapsackNode.cs" />
+	<Compile Include="Solvers\CuttingPlane.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include=".vs\LPR 381 Project.csproj.dtbcache.json" />
