@@ -25,6 +25,11 @@ namespace LPR_381_Project
             TestKnapsack();
             Console.WriteLine("=================================================");
 
+            //Testing Cutting Plane Method
+            Console.WriteLine("This is Cutting Plane:");
+            TestCuttingPlane();
+            Console.WriteLine("=================================================");
+
 
             // --- Primal and Revised Simplex test using Korean Auto LP ---
             Console.WriteLine("\n--- Testing Primal and Revised Simplex ---");
@@ -33,6 +38,29 @@ namespace LPR_381_Project
             
 
             
+        }
+
+        static void TestCuttingPlane()
+        {
+            double[,] initialT =
+                {
+            //Korean Auto LP
+            { -50, -100, 0, 0, 0 },
+            { -7, -2, 1, 0, -28 },
+            { -2, -12, 0, 1, -24 },
+        };
+
+            var dual = new DualSimplex();
+
+            var iterations = dual.Solve(initialT);
+
+            for (int i = 0; i < iterations.Count; i++)
+            {
+                Console.WriteLine($"--- Iteration {i} ---");
+                PrintTableau(iterations[i]);
+                Console.WriteLine();
+            }
+
         }
 
         static void TestKnapsack()
