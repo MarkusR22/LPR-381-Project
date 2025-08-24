@@ -52,7 +52,9 @@
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Sensitivity\SensitivityAnalyzer.cs" />
+    <Compile Include="Solvers\BnBSimplex.cs" />
     <Compile Include="Solvers\DualSimplex.cs" />
+    <Compile Include="Solvers\CuttingPlane.cs" />
     <Compile Include="Solvers\PrimalSimplexSolver.cs" />
     <Compile Include="Solvers\RevisedSimplexSolver.cs" />
     <Compile Include="Utils\MathUtils.cs" />

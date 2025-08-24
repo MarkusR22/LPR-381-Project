@@ -1,8 +1,10 @@
 ﻿using LPR_381_Project.Models;
+using LPR_381_Project.Parsers;
 using LPR_381_Project.Solvers;
 using LPR_381_Project.Utils;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.Remoting.Messaging;
 using System.Text;
@@ -15,6 +17,14 @@ namespace LPR_381_Project
     {
         static void Main(string[] args)
         {
+
+            //Testing Branch and Bound Simplex
+
+            Console.WriteLine("This is Simplex Branch and Bound:");
+            TestBnBSimplex();
+            Console.WriteLine("=================================================");
+
+
             //Testing Dual Simplex Method
             Console.WriteLine("This is Dual:");
             TestDual();
@@ -99,6 +109,15 @@ namespace LPR_381_Project
             long len = new FileInfo(outputPath).Length;
             Console.WriteLine($"Wrote {len} bytes to: {outputPath}");
         }
+            for (int i = 0; i < iterations.Count; i++)
+            {
+                Console.WriteLine($"--- Iteration {i} ---");
+                PrintTableau(iterations[i]);
+                Console.WriteLine();
+            }
+
+            
+        }
 
 
         static void PrintTableau(double[,] T, TextWriter w)
@@ -108,6 +127,37 @@ namespace LPR_381_Project
             {
                 for (int j = 0; j < c; j++) w.Write($"{T[i, j],8:0.###} ");
                 w.WriteLine();
+            }
+        static void TestBnBSimplex()
+        {
+            try
+            {
+                // 1) Load a simple ILP (see sample content below)
+                var inputPath = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory, @"..\..\Input\sample.txt"));
+                var model = InputFileParser.ParseFile(inputPath);
+
+                // 2) Run Branch & Bound (Dual → Primal at each node)
+                var bnb = new BranchAndBoundSimplex();
+                var result = bnb.Solve(model);
+
+                // 3) Print results
+                Console.WriteLine("== Branch & Bound Result ==");
+                Console.WriteLine($"Feasible: {result.Feasible}");
+                Console.WriteLine($"Nodes explored: {result.NodesExplored}");
+                Console.WriteLine($"Best objective: {result.BestObjective:0.###}");
+                foreach (var kv in result.BestX.OrderBy(k => k.Key))
+                    Console.WriteLine($"{kv.Key} = {kv.Value:0.###}");
+
+                Console.WriteLine("\n== Branch Log ==");
+                Console.WriteLine(result.Log);
+
+                Console.WriteLine("\nPer-node tableaux were written to: bin\\Debug\\Output\\node_*.txt");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error running Branch & Bound:");
+                Console.WriteLine(ex.ToString());
             }
         }
 
