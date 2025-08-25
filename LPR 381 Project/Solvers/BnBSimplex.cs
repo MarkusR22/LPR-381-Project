@@ -1,84 +1,37 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using LPR_381_Project.Models;
 using System.IO;
 using System.Text;
+using LPR_381_Project.Models;
+using System.Xml.Linq;
 
 namespace LPR_381_Project.Solvers
 {
-    /// <summary>
-    /// Branch-and-Bound over LP relaxations using your existing Primal & Dual Simplex solvers.
-    /// For each node: (1) Dual Simplex if any RHS < 0 to repair feasibility, then (2) Primal Simplex to optimize.
-    /// - Writes ALL nodes to one file: Output/branch_and_bound_nodes.txt
-    /// - Prints each node’s final (optimal) tableau + status to the Console
-    /// - Integrality enforced only for Integer/Binary variables
-    /// </summary>
     public class BranchAndBoundSimplex
     {
-        private const double TOL = 1e-9;               // numeric noise tolerance
+        //private const double TOL = 1e-9;               // numeric noise tolerance
         private const int MAX_NODES = 10_000;          // safety
 
-        public class BranchAndBoundResult
-        {
-            public Dictionary<string, double> BestX { get; set; } = new Dictionary<string, double>();
-            public double BestObjective { get; set; } = double.NegativeInfinity;
-            public bool Feasible { get; set; }
-            public int NodesExplored { get; set; }
-            public string Log { get; set; } = string.Empty;
-        }
-
-        private class Node
-        {
-            public string Label;                              // e.g., "Root", "L", "R.L", etc.
-            public List<Bound> Bounds = new List<Bound>();    // branching bounds accumulated from root
-            public int Depth;
-
-            // Relaxation info
-            public Dictionary<string, double> X = new Dictionary<string, double>();
-            public double Objective;                          // objective value of LP relaxation
-            public bool IsInteger;                            // current relaxation is integer-feasible for integer/binary vars
-            public bool Infeasible;                           // LP infeasible/unbounded
-            public string SolverUsed;                         // "Dual+Primal", "PrimalSimplex", etc.
-
-            public override string ToString()
-            {
-                var b = Bounds.Count == 0 ? "(none)" : string.Join(", ", Bounds.Select(x => x.ToString()));
-                return $"Node[{Label}] depth={Depth}, bounds={b}, obj={(Infeasible ? "INF" : Objective.ToString("0.###"))}, integer={IsInteger}, solver={SolverUsed}";
-            }
-        }
-
-        private class Bound
-        {
-            public int VarIndex; // 0-based in model.Variables list
-            public bool IsUpper; // true => x_j <= value; false => x_j >= value
-            public double Value;
-            public override string ToString() => IsUpper ? $"x{VarIndex + 1} <= {Value}" : $"x{VarIndex + 1} >= {Value}";
-        }
-
-        /// <summary>
-        /// Solve integer program by Branch-and-Bound. The model can contain <=, >=, = constraints.
-        /// Variable integrality is read from Variable.Type (Integer/Binary).
-        /// </summary>
-        public BranchAndBoundResult Solve(LinearModel baseModel)
+        public BnBSimplexResult Solve(LinearModel baseModel)
         {
             if (baseModel == null) throw new ArgumentNullException(nameof(baseModel));
             if (baseModel.Variables == null || baseModel.Variables.Count == 0)
                 throw new ArgumentException("Model has no variables.");
 
             // PREP: ensure Binary variables get x <= 1 bound in the root
-            var root = new Node { Label = "Root", Depth = 0 };
+            var root = new BnBSimplexNode { Label = "Root", Depth = 0 };
             for (int j = 0; j < baseModel.Variables.Count; j++)
             {
                 if (baseModel.Variables[j].Type == VarType.Binary)
-                    root.Bounds.Add(new Bound { VarIndex = j, IsUpper = true, Value = 1.0 });
+                    root.Bounds.Add(new BnBSimplexBound { VarIndex = j, IsUpper = true, Value = 1.0 });
                 // (We assume non-negativity for Positive/Integer/Binary; Negative vars are not handled.)
             }
 
-            var best = new BranchAndBoundResult();
+            var best = new BnBSimplexResult();
 
             // Best-first search list
-            var pending = new List<Node> { root };
+            var pending = new List<BnBSimplexNode> { root };
 
             int explored = 0;
             var sbLog = new StringBuilder();
@@ -148,21 +101,21 @@ namespace LPR_381_Project.Solvers
                 double ceilV = Math.Ceiling(xval - 1e-12);
 
                 // Left child: x_j <= floor
-                var left = new Node
+                var left = new BnBSimplexNode
                 {
-                    Label = node.Label == "Root" ? "L" : node.Label + ".L",
+                    Label = node.Label == "Root" ? "1" : node.Label + ".1",
                     Depth = node.Depth + 1,
-                    Bounds = new List<Bound>(node.Bounds)
-                    { new Bound { VarIndex = branchIndex, IsUpper = true, Value = floorV } }
+                    Bounds = new List<BnBSimplexBound>(node.Bounds)
+                    { new BnBSimplexBound { VarIndex = branchIndex, IsUpper = true, Value = floorV } }
                 };
 
                 // Right child: x_j >= ceil
-                var right = new Node
+                var right = new BnBSimplexNode
                 {
-                    Label = node.Label == "Root" ? "R" : node.Label + ".R",
+                    Label = node.Label == "Root" ? "2" : node.Label + ".2",
                     Depth = node.Depth + 1,
-                    Bounds = new List<Bound>(node.Bounds)
-                    { new Bound { VarIndex = branchIndex, IsUpper = false, Value = ceilV } }
+                    Bounds = new List<BnBSimplexBound>(node.Bounds)
+                    { new BnBSimplexBound { VarIndex = branchIndex, IsUpper = false, Value = ceilV } }
                 };
 
                 // Add to pending set
@@ -175,7 +128,7 @@ namespace LPR_381_Project.Solvers
             return best;
         }
 
-        private static List<Node> SortByBound(List<Node> nodes, Objective obj)
+        private static List<BnBSimplexNode> SortByBound(List<BnBSimplexNode> nodes, Objective obj)
         {
             // nodes without an objective yet stay in FIFO order
             return obj == Objective.Maximize
@@ -183,7 +136,7 @@ namespace LPR_381_Project.Solvers
                 : nodes.OrderBy(n => n.Objective == 0 ? double.PositiveInfinity : n.Objective).ToList();
         }
 
-        private void SolveNodeLP(LinearModel baseModel, Node node, out List<double[,]> iterations, out bool infeasible)
+        private void SolveNodeLP(LinearModel baseModel, BnBSimplexNode node, out List<double[,]> iterations, out bool infeasible)
         {
             iterations = new List<double[,]>();
             infeasible = false;
@@ -266,8 +219,6 @@ namespace LPR_381_Project.Solvers
             var iters = new List<double[,]>();
             var T = Clone(start);
             iters.Add(Clone(T));
-
-            int cols = T.GetLength(1);
 
             while (true)
             {
@@ -353,14 +304,14 @@ namespace LPR_381_Project.Solvers
             }
         }
 
-        private static string NodeStatus(LinearModel baseModel, Node node)
+        private static string NodeStatus(LinearModel baseModel, BnBSimplexNode node)
         {
             if (node.Infeasible) return "Infeasible";
             if (IsIntegerFeasible(node.X, baseModel)) return "Candidate";
             return "Branched";
         }
 
-        private static void PrettyPrintNode(Node node, double[,] tableau, string status)
+        private static void PrettyPrintNode(BnBSimplexNode node, double[,] tableau, string status)
         {
             Console.WriteLine();
             Console.WriteLine($"---- Node {node.Label} | {status} ----");
@@ -396,10 +347,19 @@ namespace LPR_381_Project.Solvers
 
         private static string FormatCell(double v)
         {
-            // integer-looking numbers print without decimals; otherwise compact
-            double round = Math.Round(v);
-            string s = Math.Abs(v - round) <= 1e-9 ? round.ToString("0") : v.ToString("0.######");
-            // pad to fixed width for alignment (like your screenshot)
+            // Round to 2 decimals, but show integers without decimals.
+            double r2 = Math.Round(v, 2, MidpointRounding.AwayFromZero);
+
+            // Clean up negative zero like -0.00
+            if (Math.Abs(r2) < 0.005) r2 = 0;
+
+            string s;
+            if (Math.Abs(r2 - Math.Round(r2)) <= 1e-9)
+                s = Math.Round(r2).ToString("0");          // integer: no decimals
+            else
+                s = r2.ToString("0.00");                   // fractional: 2 decimals
+
+            // pad for alignment (tweak width if you want)
             if (s.Length < 8) s = s.PadLeft(8, ' ');
             else s = " " + s + " ";
             return s;
@@ -450,7 +410,7 @@ namespace LPR_381_Project.Solvers
         }
 
         // Build a fresh model for a node: 1) normalize original constraints to <=, 2) append branching bounds
-        private static LinearModel BuildNodeModel(LinearModel baseModel, List<Bound> bounds)
+        private static LinearModel BuildNodeModel(LinearModel baseModel, List<BnBSimplexBound> bounds)
         {
             var m = new LinearModel { Obj = baseModel.Obj };
             foreach (var v in baseModel.Variables)
@@ -575,7 +535,7 @@ namespace LPR_381_Project.Solvers
             return B;
         }
 
-        private static void AppendNodeBlock(string path, Node node, double[,] tableau, string status)
+        private static void AppendNodeBlock(string path, BnBSimplexNode node, double[,] tableau, string status)
         {
             try
             {

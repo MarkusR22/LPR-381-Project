@@ -124,7 +124,7 @@ namespace LPR_381_Project
             try
             {
                 string inputPath = Path.GetFullPath(Path.Combine(
-                    AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\Input\sample.txt"));
+                    AppDomain.CurrentDomain.BaseDirectory, @"..\..\Input\sample.txt"));
                 var model = InputFileParser.ParseFile(inputPath);
 
                 var bnb = new BranchAndBoundSimplex();
