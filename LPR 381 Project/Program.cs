@@ -125,25 +125,36 @@ namespace LPR_381_Project
             {
                 string inputPath = Path.GetFullPath(Path.Combine(
                     AppDomain.CurrentDomain.BaseDirectory, @"..\..\Input\sample.txt"));
-                var model = InputFileParser.ParseFile(inputPath);
 
-                var bnb = new BranchAndBoundSimplex();
-                var result = bnb.Solve(model);
+                // Parse -> LinearModel
+                LinearModel model = InputFileParser.ParseFile(inputPath);
 
+                // Solve
+                var solver = new BranchAndBoundSimplex();
+                var result = solver.Solve(model);
+
+                // Summary (solver already prints per-iteration tableaus and writes Output/branch_and_bound_nodes.txt)
                 Console.WriteLine("== Branch & Bound Result ==");
+                Console.WriteLine($"Input: {inputPath}");
                 Console.WriteLine($"Feasible: {result.Feasible}");
                 Console.WriteLine($"Nodes explored: {result.NodesExplored}");
-                Console.WriteLine($"Best objective: {result.BestObjective:0.###}");
+                Console.WriteLine($"Best objective: {result.BestObjective:0.##}");
+
                 foreach (var kv in result.BestX.OrderBy(k => k.Key))
-                    Console.WriteLine($"{kv.Key} = {kv.Value:0.###}");
+                    Console.WriteLine($"{kv.Key} = {kv.Value:0.##}");
 
                 Console.WriteLine("\n== Branch Log ==");
                 Console.WriteLine(result.Log);
+
+                // Point to the unified node output file if present
+                string nodeOut = Path.GetFullPath("Output/branch_and_bound_nodes.txt");
+                if (File.Exists(nodeOut))
+                    Console.WriteLine($"\nAll node tableaus were saved to: {nodeOut}");
             }
             catch (Exception ex)
             {
                 Console.WriteLine("Error running Branch & Bound:");
-                Console.WriteLine(ex.ToString());
+                Console.WriteLine(ex);
             }
         }
 
