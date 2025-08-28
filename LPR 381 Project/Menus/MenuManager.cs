@@ -153,26 +153,38 @@ namespace LPR_381_Project.Menus
 
         static void RunBnBSimplex()
         {
-            var inputPath = AskInputPath();
-            var model = InputFileParser.ParseFile(inputPath);
+            try
+                {
+                string inputPath = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory, @"..\..\Input\sample.txt"));
+                LinearModel model = InputFileParser.ParseFile(inputPath);
+                    
+                var solver = new BranchAndBoundSimplex();
+                var result = solver.Solve(model);
 
-            var bnb = new BranchAndBoundSimplex();
-            var res = bnb.Solve(model);
+                // Summary (solver already prints per-iteration tableaus and writes Output/branch_and_bound_nodes.txt)
+                Console.WriteLine("== Branch & Bound Result ==");
+                Console.WriteLine($"Input: {inputPath}");
+                Console.WriteLine($"Feasible: {result.Feasible}");
+                Console.WriteLine($"Nodes explored: {result.NodesExplored}");
+                Console.WriteLine($"Best objective: {result.BestObjective:0.##}");
 
-            var outPath = NewOutputPath("BnB-Simplex");
-            using (var sw = new StreamWriter(outPath, false, Encoding.UTF8))
-            {
-                sw.WriteLine("=== Branch & Bound (Simplex) ===");
-                sw.WriteLine($"Feasible: {res.Feasible}");
-                sw.WriteLine($"Nodes explored: {res.NodesExplored}");
-                sw.WriteLine($"Best objective: {res.BestObjective:0.###}");
-                foreach (var kv in res.BestX.OrderBy(k => k.Key))
-                    sw.WriteLine($"{kv.Key} = {kv.Value:0.###}");
-                sw.WriteLine();
-                sw.WriteLine("=== Branch Log ===");
-                sw.WriteLine(res.Log);
-            }
-            PauseDone(outPath);
+                foreach (var kv in result.BestX.OrderBy(k => k.Key))
+                Console.WriteLine($"{kv.Key} = {kv.Value:0.##}");
+                Console.WriteLine("\n== Branch Log ==");
+                Console.WriteLine(result.Log);
+
+             // Point to the unified node output file if present
+             string nodeOut = Path.GetFullPath("Output/branch_and_bound_nodes.txt");
+             if (File.Exists(nodeOut))
+                        Console.WriteLine($"\nAll node tableaus were saved to: {nodeOut}");
+             }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Error running Branch & Bound:");
+                    Console.WriteLine(ex);
+                }
+            
         }
 
         static void RunCuttingPlane()
