@@ -47,7 +47,7 @@ namespace LPR_381_Project.Solvers
             var sb = new StringBuilder();
 
             // --- Header with node info ---
-            sb.AppendLine($"Node {Name} | Status: {Status} | Objective: {Objective}");
+            sb.AppendLine($"Node {Name} | Status: {Status} | Objective: {Math.Round(Objective, 2).ToString("0.00")}");
 
             // Build the display order = DecisionOrder (unique, in order) + remaining by RankSnapshot
             var seen = new HashSet<int>();

@@ -1,0 +1,269 @@
+﻿==== BnB Knapsack Iterations ====
+Timestamp: 2025-08-29 13:09:29
+Capacity: 40
+
+Node 0 | Status: Branched | Objective: 15,40
++--------+
+| x3=1   |
+| x6=1   |
+| x2=1   |
+| x4=1   |
+| x5=1/5 |
+| x1=0   |
++--------+
+Weight: 40 / 40
+
+Node 1 | Status: Branched | Objective: 15,36
++---------+
+| x5=0    |
+| x3=1    |
+| x6=1    |
+| x2=1    |
+| x4=1    |
+| x1=2/11 |
++---------+
+Weight: 40 / 40
+
+Node 2 | Status: Branched | Objective: 14,14
++--------+
+| x5=1   |
+| x3=1   |
+| x6=1   |
+| x2=1   |
+| x4=3/7 |
+| x1=0   |
++--------+
+Weight: 40 / 40
+
+Node 1.1 | Status: Candidate | Objective: 15,00
++------+
+| x5=0 |
+| x1=0 |
+| x3=1 |
+| x6=1 |
+| x2=1 |
+| x4=1 |
++------+
+Weight: 38 / 40
+
+Node 1.2 | Status: Branched | Objective: 13,79
++---------+
+| x5=0    |
+| x1=1    |
+| x3=1    |
+| x6=1    |
+| x2=1    |
+| x4=5/14 |
++---------+
+Weight: 40 / 40
+
+Node 2.1 | Status: Branched | Objective: 13,09
++---------+
+| x5=1    |
+| x4=0    |
+| x3=1    |
+| x6=1    |
+| x2=1    |
+| x1=6/11 |
++---------+
+Weight: 40 / 40
+
+Node 2.2 | Status: Candidate | Objective: 14,00
++------+
+| x5=1 |
+| x4=1 |
+| x3=1 |
+| x6=1 |
+| x2=0 |
+| x1=0 |
++------+
+Weight: 40 / 40
+
+Node 1.2.1 | Status: Candidate | Objective: 12,00
++------+
+| x5=0 |
+| x1=1 |
+| x4=0 |
+| x3=1 |
+| x6=1 |
+| x2=1 |
++------+
+Weight: 35 / 40
+
+Node 1.2.2 | Status: Branched | Objective: 13,60
++---------+
+| x5=0    |
+| x1=1    |
+| x4=1    |
+| x3=1    |
+| x6=9/10 |
+| x2=0    |
++---------+
+Weight: 40 / 40
+
+Node 2.1.1 | Status: Candidate | Objective: 12,00
++------+
+| x5=1 |
+| x4=0 |
+| x1=0 |
+| x3=1 |
+| x6=1 |
+| x2=1 |
++------+
+Weight: 34 / 40
+
+Node 2.1.2 | Status: Branched | Objective: 12,12
++--------+
+| x5=1   |
+| x4=0   |
+| x1=1   |
+| x3=1   |
+| x6=1   |
+| x2=3/8 |
++--------+
+Weight: 40 / 40
+
+Node 1.2.2.1 | Status: Candidate | Objective: 13,00
++------+
+| x5=0 |
+| x1=1 |
+| x4=1 |
+| x6=0 |
+| x3=1 |
+| x2=1 |
++------+
+Weight: 39 / 40
+
+Node 1.2.2.2 | Status: Branched | Objective: 13,50
++--------+
+| x5=0   |
+| x1=1   |
+| x4=1   |
+| x6=1   |
+| x3=5/6 |
+| x2=0   |
++--------+
+Weight: 40 / 40
+
+Node 2.1.2.1 | Status: Candidate | Objective: 11,00
++------+
+| x5=1 |
+| x4=0 |
+| x1=1 |
+| x2=0 |
+| x3=1 |
+| x6=1 |
++------+
+Weight: 37 / 40
+
+Node 2.1.2.2 | Status: Branched | Objective: 12,00
++--------+
+| x5=1   |
+| x4=0   |
+| x1=1   |
+| x2=1   |
+| x3=1   |
+| x6=1/2 |
++--------+
+Weight: 40 / 40
+
+Node 1.2.2.2.1 | Status: Branched | Objective: 12,88
++--------+
+| x5=0   |
+| x1=1   |
+| x4=1   |
+| x6=1   |
+| x3=0   |
+| x2=5/8 |
++--------+
+Weight: 40 / 40
+
+Node 1.2.2.2.2 | Status: Infeasible | Objective: 0,00
++------+
+| x5=0 |
+| x1=1 |
+| x4=1 |
+| x6=1 |
+| x3=1 |
+| x2=0 |
++------+
+Weight: 0 / 40
+
+Node 2.1.2.2.1 | Status: Candidate | Objective: 10,00
++------+
+| x5=1 |
+| x4=0 |
+| x1=1 |
+| x2=1 |
+| x6=0 |
+| x3=1 |
++------+
+Weight: 35 / 40
+
+Node 2.1.2.2.2 | Status: Branched | Objective: 11,50
++--------+
+| x5=1   |
+| x4=0   |
+| x1=1   |
+| x2=1   |
+| x6=1   |
+| x3=1/6 |
++--------+
+Weight: 40 / 40
+
+Node 1.2.2.2.1.1 | Status: Candidate | Objective: 11,00
++------+
+| x5=0 |
+| x1=1 |
+| x4=1 |
+| x6=1 |
+| x3=0 |
+| x2=0 |
++------+
+Weight: 35 / 40
+
+Node 1.2.2.2.1.2 | Status: Infeasible | Objective: 0,00
++------+
+| x5=0 |
+| x1=1 |
+| x4=1 |
+| x6=1 |
+| x3=0 |
+| x2=1 |
++------+
+Weight: 0 / 40
+
+Node 2.1.2.2.2.1 | Status: Candidate | Objective: 11,00
++------+
+| x5=1 |
+| x4=0 |
+| x1=1 |
+| x2=1 |
+| x6=1 |
+| x3=0 |
++------+
+Weight: 39 / 40
+
+Node 2.1.2.2.2.2 | Status: Infeasible | Objective: 0,00
++------+
+| x5=1 |
+| x4=0 |
+| x1=1 |
+| x2=1 |
+| x6=1 |
+| x3=1 |
++------+
+Weight: 0 / 40
+
+=== Best Candidate ===
+Node 1.1 | Status: Candidate | Objective: 15,00
++------+
+| x5=0 |
+| x1=0 |
+| x3=1 |
+| x6=1 |
+| x2=1 |
+| x4=1 |
++------+
+Weight: 38 / 40
+

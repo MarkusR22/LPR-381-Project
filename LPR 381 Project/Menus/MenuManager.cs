@@ -5,6 +5,7 @@ using System.Text;
 using LPR_381_Project.Parsers;
 using LPR_381_Project.Solvers;
 using LPR_381_Project.Utils;
+using LPR_381_Project.Models;
 
 namespace LPR_381_Project.Menus
 {
@@ -90,7 +91,7 @@ namespace LPR_381_Project.Menus
 
         static void PauseDone(string path)
         {
-            Console.WriteLine($"\nDone. Output → {path}");
+            //Console.WriteLine($"\nDone. Output → {path}");
             Console.WriteLine("Press any key to return to menu...");
             Console.ReadKey();
         }
@@ -154,11 +155,11 @@ namespace LPR_381_Project.Menus
         static void RunBnBSimplex()
         {
             try
-                {
-                string inputPath = Path.GetFullPath(Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory, @"..\..\Input\sample.txt"));
+            {
+                // Let the user choose an input file (expects a knapsack-friendly LinearModel)
+                var inputPath = AskInputPath();
                 LinearModel model = InputFileParser.ParseFile(inputPath);
-                    
+
                 var solver = new BranchAndBoundSimplex();
                 var result = solver.Solve(model);
 
@@ -170,20 +171,21 @@ namespace LPR_381_Project.Menus
                 Console.WriteLine($"Best objective: {result.BestObjective:0.##}");
 
                 foreach (var kv in result.BestX.OrderBy(k => k.Key))
-                Console.WriteLine($"{kv.Key} = {kv.Value:0.##}");
+                    Console.WriteLine($"{kv.Key} = {kv.Value:0.##}");
                 Console.WriteLine("\n== Branch Log ==");
                 Console.WriteLine(result.Log);
 
-             // Point to the unified node output file if present
-             string nodeOut = Path.GetFullPath("Output/branch_and_bound_nodes.txt");
-             if (File.Exists(nodeOut))
-                        Console.WriteLine($"\nAll node tableaus were saved to: {nodeOut}");
-             }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("Error running Branch & Bound:");
-                    Console.WriteLine(ex);
-                }
+                // Point to the unified node output file if present
+                string nodeOut = Path.GetFullPath("Output/branch_and_bound_nodes.txt");
+                if (File.Exists(nodeOut))
+                    PauseDone(nodeOut);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error running Branch & Bound:");
+                Console.WriteLine(ex);
+                Console.ReadKey();
+            }
             
         }
 
@@ -220,29 +222,28 @@ namespace LPR_381_Project.Menus
 
         static void RunKnapsack()
         {
-            // For the project’s binary knapsack IP (from the brief)
-            // You can also parse different instances from file if desired.
-            int capacity = 40;
-            int[] profit = { 2, 3, 3, 5, 2, 4 };
-            int[] weight = { 11, 8, 6, 14, 10, 10 };
-
-            var knap = new BnBKnapsack(capacity, profit, weight);
-            var nodes = knap.Solve().ToList();
-            var best = knap.GetBestCandidate();
-
-            var outPath = NewOutputPath("BnB-Knapsack");
-            using (var sw = new StreamWriter(outPath, false, Encoding.UTF8))
+            try
             {
-                sw.WriteLine("=== Branch & Bound Knapsack ===");
-                foreach (var node in nodes)
-                {
-                    sw.WriteLine(node.ToString());
-                    sw.WriteLine();
-                }
-                sw.WriteLine("=== Best Candidate ===");
-                sw.WriteLine(best != null ? best.ToString() : "None");
+                // Let the user choose an input file (expects a knapsack-friendly LinearModel)
+                var inputPath = AskInputPath();
+                LinearModel model = InputFileParser.ParseFile(inputPath);
+
+                // Solve using the model-based constructor (non-throwing in case model isn't valid for knapsack)
+                var knap = new BnBKnapsack(model);
+                var nodes = knap.Solve();  // prints a neat message and returns empty list if model not applicable
+
+                knap.PrintAllIterations();
+                
+
+                // Done
+                PauseDone("Output");
             }
-            PauseDone(outPath);
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error running Knapsack:");
+                Console.WriteLine(ex.ToString());
+                PauseDone(null);
+            }
         }
 
         static void RunSensitivity()

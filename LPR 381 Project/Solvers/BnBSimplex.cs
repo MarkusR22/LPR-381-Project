@@ -4,7 +4,6 @@ using System.Linq;
 using System.IO;
 using System.Text;
 using LPR_381_Project.Models;
-using System.Xml.Linq;
 
 namespace LPR_381_Project.Solvers
 {
@@ -38,12 +37,17 @@ namespace LPR_381_Project.Solvers
             }
 
             var best = new BnBSimplexResult();
-            var pending = new List<BnBSimplexNode> { root };
+            string bestNodeLabel = null;
+
+            var pending = new List<BnBSimplexNode> { root }; // DFS stack (use .Add/.Remove at end)
             int explored = 0;
             var sbLog = new StringBuilder();
 
-            Directory.CreateDirectory("Output");
-            var unifiedPath = Path.Combine("Output", "branch_and_bound_nodes.txt");
+            // --- Write unified node file in PROJECT ROOT Output folder ---
+            var rootDir = ProjectRoot();
+            var outDir = Path.Combine(rootDir, "Output");
+            Directory.CreateDirectory(outDir);
+            var unifiedPath = Path.Combine(outDir, "branch_and_bound_nodes.txt");
             File.WriteAllText(unifiedPath,
                 "==== Branch & Bound Nodes ====" + Environment.NewLine +
                 "Timestamp: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + Environment.NewLine +
@@ -51,9 +55,9 @@ namespace LPR_381_Project.Solvers
 
             while (pending.Count > 0 && explored < MAX_NODES)
             {
-                pending = SortByBound(pending, baseModel.Obj);
-                var node = pending[0];
-                pending.RemoveAt(0);
+                // DFS/backtracking: pop the last node
+                var node = pending[pending.Count - 1];
+                pending.RemoveAt(pending.Count - 1);
                 explored++;
 
                 // Solve node (uses seed if available)
@@ -71,17 +75,7 @@ namespace LPR_381_Project.Solvers
 
                 if (node.Infeasible) continue;
 
-                // Bound pruning
-                if (baseModel.Obj == Objective.Maximize)
-                {
-                    if (best.Feasible && node.Objective + 1e-12 < best.BestObjective) continue;
-                }
-                else
-                {
-                    if (best.Feasible && node.Objective - 1e-12 > best.BestObjective) continue;
-                }
-
-                // Integrality check
+                // Integrality
                 node.IsInteger = IsIntegerFeasible(node.X, baseModel);
                 if (node.IsInteger)
                 {
@@ -90,19 +84,20 @@ namespace LPR_381_Project.Solvers
                         best.Feasible = true;
                         best.BestObjective = node.Objective;
                         best.BestX = new Dictionary<string, double>(node.X);
+                        bestNodeLabel = node.Label; // track label locally for summary
                     }
-                    continue;
+                    continue; // leaf
                 }
 
-                // Choose branching variable (largest fractional among integer/binary)
+                // Branch var
                 int branchIndex = ChooseBranchVariable(baseModel, node.X);
-                if (branchIndex < 0) continue;
+                if (branchIndex < 0) continue; // nothing fractional -> treat as leaf
 
                 double xval = node.X[baseModel.Variables[branchIndex].Name];
                 double floorV = Math.Floor(xval + 1e-12);
                 double ceilV = Math.Ceiling(xval - 1e-12);
 
-                // Children with numeric labels
+                // Children numeric labels 1/2 style
                 var left = new BnBSimplexNode
                 {
                     Label = node.Label == "Root" ? "1" : node.Label + ".1",
@@ -110,7 +105,6 @@ namespace LPR_381_Project.Solvers
                     Bounds = new List<BnBSimplexBound>(node.Bounds)
                     { new BnBSimplexBound { VarIndex = branchIndex, IsUpper = true,  Value = floorV } }
                 };
-
                 var right = new BnBSimplexNode
                 {
                     Label = node.Label == "Root" ? "2" : node.Label + ".2",
@@ -127,19 +121,61 @@ namespace LPR_381_Project.Solvers
                     _seeds[right] = new Seed { ParentLast = parentLast, ParentHeaders = new List<string>(headers), NewBound = right.Bounds[right.Bounds.Count - 1] };
                 }
 
-                pending.Add(left);
+                // Push children for DFS: push right first so left is explored first
                 pending.Add(right);
+                pending.Add(left);
             }
 
             best.NodesExplored = explored;
             best.Log = sbLog.ToString();
+
+            // Append "Best Candidate Summary" at end of the same file
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("==== Best Candidate Summary ====");
+                if (best.Feasible && best.BestX != null)
+                {
+                    sb.AppendLine("Status: Candidate");
+                    sb.AppendLine("Best z = " + FormatNumber2OrInt(best.BestObjective));
+                    if (!string.IsNullOrEmpty(bestNodeLabel))
+                        sb.AppendLine("Best node: " + bestNodeLabel);
+                    sb.AppendLine("x* = { " + string.Join(", ", best.BestX.Select(kv => kv.Key + "=" + FormatNumber2OrInt(kv.Value))) + " }");
+                }
+                else
+                {
+                    sb.AppendLine("Status: No feasible integer solution found.");
+                }
+                sb.AppendLine();
+                File.AppendAllText(unifiedPath, sb.ToString());
+            }
+            catch { /* ignore IO errors */ }
+
             return best;
         }
 
+        // ---- project-root resolver (finds folder that contains Input or a .csproj) ----
+        private static string ProjectRoot()
+        {
+            string dir = AppDomain.CurrentDomain.BaseDirectory;
+            while (dir != null)
+            {
+                bool hasInput = Directory.Exists(Path.Combine(dir, "Input"));
+                bool hasCsproj = Directory.GetFiles(dir, "*.csproj", SearchOption.TopDirectoryOnly).Length > 0;
+                if (hasInput || hasCsproj) return dir;
+
+                var parent = Directory.GetParent(dir);
+                if (parent == null) break;
+                dir = parent.FullName;
+            }
+            // fallback: base directory
+            return AppDomain.CurrentDomain.BaseDirectory;
+        }
+
+        // Kept for potential future use; not used in DFS mode
         private static List<BnBSimplexNode> SortByBound(List<BnBSimplexNode> nodes, Objective obj)
         {
-            if (obj == Objective.Maximize)
-                return nodes.OrderByDescending(n => n.Objective).ToList();
+            if (obj == Objective.Maximize) return nodes.OrderByDescending(n => n.Objective).ToList();
             return nodes.OrderBy(n => n.Objective == 0 ? double.PositiveInfinity : n.Objective).ToList();
         }
 
@@ -155,22 +191,19 @@ namespace LPR_381_Project.Solvers
             headers = new List<string>();
             infeasible = false;
 
-            // Build node-local model (normalized ≤), remember row types if we need a fresh tableau.
             List<char> rowTypes;
             LinearModel model = BuildNodeModel(baseModel, node.Bounds, out rowTypes);
 
             double[,] T;
 
-            // If we have a seed (parent’s last tableau), build Iteration 0 from it.
             Seed seed;
             if (_seeds.TryGetValue(node, out seed) && seed != null && seed.ParentLast != null && seed.ParentHeaders != null && seed.ParentHeaders.Count > 0)
             {
                 T = CreateSeededTableau(seed.ParentLast, seed.ParentHeaders, seed.NewBound, model.Variables.Count, out headers);
-                iterations.Add(Clone(T)); // Iteration 0 == parent's last + new row/col
+                iterations.Add(Clone(T)); // Iteration 0
             }
             else
             {
-                // Fallback: fresh tableau as Iteration 0
                 T = BuildTableau(model, rowTypes, out headers);
                 iterations.Add(Clone(T));
             }
@@ -227,7 +260,6 @@ namespace LPR_381_Project.Solvers
                 }
             }
 
-            // Extract solution and objective on original coefficients
             var xvec = ExtractX(T, model.Variables.Count);
             var xdict = new Dictionary<string, double>();
             for (int j = 0; j < model.Variables.Count; j++)
@@ -237,63 +269,42 @@ namespace LPR_381_Project.Solvers
             node.Objective = EvaluateObjective(baseModel, xdict);
         }
 
-        // ----- Build Iteration 0 from parent's optimal tableau + new bound row -----
-
         private static double[,] CreateSeededTableau(
-    double[,] parentLast,
-    List<string> parentHeaders,
-    BnBSimplexBound bound,
-    int numVars,
-    out List<string> newHeaders)
+            double[,] parentLast,
+            List<string> parentHeaders,
+            BnBSimplexBound bound,
+            int numVars,
+            out List<string> newHeaders)
         {
             int pr = parentLast.GetLength(0);
             int pc = parentLast.GetLength(1);
             int parentM = pr - 1;
             int parentRhs = pc - 1;
 
-            // New dims: +1 row, +1 column (the new S/E). Place S/E where RHS used to be.
             int rows = pr + 1;
             int cols = pc + 1;
-            int newSlackCol = pc - 1;   // insert BEFORE RHS
-            int newRhsCol = cols - 1; // move RHS to last column
+            int newSlackCol = pc - 1;
+            int newRhsCol = cols - 1;
 
             var T = new double[rows, cols];
 
-            // Copy parent's non-RHS columns unchanged (0..pc-2)
             for (int i = 0; i < pr; i++)
             {
                 for (int j = 0; j < pc - 1; j++)
                     T[i, j] = parentLast[i, j];
-
-                // Move parent's RHS to the new last column
                 T[i, newRhsCol] = parentLast[i, parentRhs];
-
-                // Initialize the inserted S/E column to 0
                 T[i, newSlackCol] = 0.0;
             }
 
-            // Objective row: cost of new S/E col is 0
             T[0, newSlackCol] = 0.0;
 
-            // --- Build the new constraint row in ORIGINAL variable space ---
-            // x_j <= floor  -> +1 * x_j + S = floor
-            // x_j >= ceil   -> -1 * x_j + E = -ceil
             double[] newRow = new double[cols];
-
-            // Decision variable coefficients first
             for (int j = 0; j < numVars; j++) newRow[j] = 0.0;
             newRow[bound.VarIndex] = bound.IsUpper ? 1.0 : -1.0;
-
-            // Existing slack/excess columns (copied area) default to 0; set the new S/E column to 1
             newRow[newSlackCol] = 1.0;
-
-            // RHS
             newRow[newRhsCol] = bound.IsUpper ? bound.Value : -bound.Value;
 
-            // Reduce the new row against the parent's basis:
-            // eliminate entries in columns that are basic in the parent tableau.
-            // IMPORTANT: map parent's RHS (pc-1) into our new RHS column (newRhsCol).
-            for (int j = 0; j < pc - 1; j++) // only old non-RHS columns
+            for (int j = 0; j < pc - 1; j++)
             {
                 int basicRow = GetBasicRow(parentLast, j);
                 if (basicRow != -1 && Math.Abs(newRow[j]) > 1e-12)
@@ -302,36 +313,22 @@ namespace LPR_381_Project.Solvers
                     for (int k = 0; k < pc - 1; k++)
                         newRow[k] -= factor * parentLast[basicRow, k];
 
-                    // RHS mapping
                     newRow[newRhsCol] -= factor * parentLast[basicRow, parentRhs];
-                    // new S/E column stays as set (it wasn't in the parent)
                 }
             }
 
-            // Write the reduced new row into the last row of T
             for (int j = 0; j < cols; j++) T[rows - 1, j] = newRow[j];
 
-            // --- Headers: [vars][old S/E][new S/E][RHS] ---
             newHeaders = new List<string>();
-
-            // Vars
             for (int j = 0; j < numVars; j++) newHeaders.Add(parentHeaders[j]);
-
-            // Old slack/excess names (everything between vars and RHS from parent)
-            for (int j = numVars; j < parentHeaders.Count - 1; j++)
-                newHeaders.Add(parentHeaders[j]);
-
-            // New slack/excess name
+            for (int j = numVars; j < parentHeaders.Count - 1; j++) newHeaders.Add(parentHeaders[j]);
             string seName = (bound.IsUpper ? "S" : "E") + (parentM + 1);
             newHeaders.Add(seName);
-
-            // RHS
             newHeaders.Add("RHS");
 
             return T;
         }
 
-        // Return row index (>=1) if column 'col' is a unit vector among constraint rows; else -1
         private static int GetBasicRow(double[,] T, int col)
         {
             int rows = T.GetLength(0);
@@ -341,17 +338,15 @@ namespace LPR_381_Project.Solvers
                 double v = T[i, col];
                 if (Math.Abs(v - 1.0) <= 1e-9)
                 {
-                    if (oneRow == -1) oneRow = i; else return -1; // more than one 1 -> not basic
+                    if (oneRow == -1) oneRow = i; else return -1;
                 }
                 else if (Math.Abs(v) > 1e-9)
                 {
-                    return -1; // nonzero outside -> not basic
+                    return -1;
                 }
             }
             return oneRow;
         }
-
-        // ----- Primal simplex loop -----
 
         private List<double[,]> RunPrimalSimplexOnTableau(double[,] start, Objective obj)
         {
@@ -440,8 +435,6 @@ namespace LPR_381_Project.Solvers
                 for (int j = 0; j < cols; j++) T[i, j] -= factor * T[pr, j];
             }
         }
-
-        // ----- Output helpers -----
 
         private static string NodeStatus(LinearModel baseModel, BnBSimplexNode node)
         {
@@ -540,7 +533,6 @@ namespace LPR_381_Project.Solvers
             }
         }
 
-        // integer if near-integer, otherwise 2 decimals; fix -0.00 => 0
         private static string FormatCell(double v)
         {
             double r2 = Math.Round(v, 2, MidpointRounding.AwayFromZero);
@@ -563,8 +555,6 @@ namespace LPR_381_Project.Solvers
                 ? Math.Round(r2).ToString("0")
                 : r2.ToString("0.00");
         }
-
-        // ----- Model/tableau helpers -----
 
         private static bool HasNegativeRHS(double[,] T)
         {
@@ -613,7 +603,6 @@ namespace LPR_381_Project.Solvers
             return true;
         }
 
-        
         // Normalize to ≤ and append branching bounds. Also emit row types (S/E) for header naming when building fresh.
         private static LinearModel BuildNodeModel(LinearModel baseModel, List<BnBSimplexBound> bounds, out List<char> rowTypes)
         {
@@ -655,13 +644,13 @@ namespace LPR_381_Project.Solvers
                 var coeffs = new List<double>(new double[m.Variables.Count]);
                 if (b.IsUpper)
                 {
-                    coeffs[b.VarIndex] = 1.0; // x_j <= value
+                    coeffs[b.VarIndex] = 1.0;
                     m.Constraints.Add(new Constraint(coeffs, Relation.LessThanOrEqual, b.Value));
                     rowTypes.Add('S');
                 }
                 else
                 {
-                    coeffs[b.VarIndex] = -1.0; // -x_j <= -value (x_j >= value)
+                    coeffs[b.VarIndex] = -1.0;
                     m.Constraints.Add(new Constraint(coeffs, Relation.LessThanOrEqual, -b.Value));
                     rowTypes.Add('E');
                 }
@@ -670,8 +659,6 @@ namespace LPR_381_Project.Solvers
             return m;
         }
 
-        // Build a fresh tableau and headers (decision vars + S#/E# per row + RHS).
-     
         private static double[,] BuildTableau(LinearModel model, List<char> rowTypes, out List<string> headers)
         {
             int m = model.Constraints.Count;
@@ -681,11 +668,9 @@ namespace LPR_381_Project.Solvers
 
             double[,] T = new double[rows, cols];
 
-            // Objective
             for (int j = 0; j < n; j++)
                 T[0, j] = (model.Obj == Objective.Maximize ? -1 : 1) * model.Variables[j].Coefficient;
 
-            // Constraints
             for (int i = 0; i < m; i++)
             {
                 var c = model.Constraints[i];
@@ -694,7 +679,6 @@ namespace LPR_381_Project.Solvers
                 T[i + 1, cols - 1] = c.RHS;
             }
 
-            // Headers
             headers = new List<string>();
             for (int j = 0; j < n; j++) headers.Add(model.Variables[j].Name);
             for (int i = 0; i < m; i++)
@@ -748,6 +732,6 @@ namespace LPR_381_Project.Solvers
             return z;
         }
 
-        private static double[,] Clone(double[,] A) { return (double[,])A.Clone(); }
+        private static double[,] Clone(double[,] A) => (double[,])A.Clone();
     }
 }
