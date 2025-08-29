@@ -74,9 +74,23 @@ namespace LPR_381_Project.Menus
             var def = Path.Combine(root, defaultRelative);
             Console.Write($"Input file [{def}]: ");
             var entered = Console.ReadLine();
-            var path = string.IsNullOrWhiteSpace(entered) ? def : entered.Trim('"');
-            if (!Path.IsPathRooted(path)) path = Path.Combine(root, path);
-            if (!File.Exists(path)) throw new FileNotFoundException("Input not found", path);
+
+            string path;
+            if (string.IsNullOrWhiteSpace(entered))
+            {
+                // user pressed enter → use default folder itself
+                path = def;
+            }
+            else
+            {
+                // only a file name → combine with Input\
+                var fileName = entered.Trim('"');
+                path = Path.Combine(def, fileName);
+            }
+
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Input not found", path);
+
             return path;
         }
 
@@ -174,11 +188,9 @@ namespace LPR_381_Project.Menus
                     Console.WriteLine($"{kv.Key} = {kv.Value:0.##}");
                 Console.WriteLine("\n== Branch Log ==");
                 Console.WriteLine(result.Log);
-
-                // Point to the unified node output file if present
-                string nodeOut = Path.GetFullPath("Output/branch_and_bound_nodes.txt");
-                if (File.Exists(nodeOut))
-                    PauseDone(nodeOut);
+                Console.WriteLine("Results saved to output file. Press any key to continue...");
+                Console.ReadKey();
+                
             }
             catch (Exception ex)
             {
@@ -233,16 +245,17 @@ namespace LPR_381_Project.Menus
                 var nodes = knap.Solve();  // prints a neat message and returns empty list if model not applicable
 
                 knap.PrintAllIterations();
-                
+
 
                 // Done
-                PauseDone("Output");
+                Console.WriteLine("Results saved to output file. Press any key to continue...");
+                Console.ReadKey();
             }
             catch (Exception ex)
             {
                 Console.WriteLine("Error running Knapsack:");
                 Console.WriteLine(ex.ToString());
-                PauseDone(null);
+                Console.ReadKey();
             }
         }
 

@@ -430,7 +430,6 @@ namespace LPR_381_Project.Solvers
                 string path = System.IO.Path.Combine(outDir, outputFileName);
                 System.IO.File.WriteAllText(path, fileSb.ToString(), System.Text.Encoding.UTF8);
 
-                Console.WriteLine("All iterations written to: " + path);
             }
             catch (Exception ex)
             {

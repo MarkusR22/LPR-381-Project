@@ -1,5 +1,5 @@
 ﻿==== BnB Knapsack Iterations ====
-Timestamp: 2025-08-29 13:09:29
+Timestamp: 2025-08-29 17:32:08
 Capacity: 40
 
 Node 0 | Status: Branched | Objective: 15,40
