@@ -204,9 +204,9 @@ namespace LPR_381_Project.Menus
         static void RunCuttingPlane()
         {
             var inputPath = AskInputPath();
-            var lines = File.ReadAllLines(inputPath);
+            var model = InputFileParser.ParseFile(inputPath);  
             var solver = new CuttingPlane();
-            var res = solver.SolveFromBriefFormat(lines);
+            var res = solver.Solve(model);
 
             var outPath = NewOutputPath("CuttingPlane");
             using (var sw = new StreamWriter(outPath, false, Encoding.UTF8))
@@ -229,7 +229,12 @@ namespace LPR_381_Project.Menus
                     sw.WriteLine();
                 }
             }
-            PauseDone(outPath);
+            // After solving and writing output
+            string outputPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "output.txt");
+            Console.WriteLine($"\nSolution written to {outPath}");
+            Console.WriteLine("Press any key to return to menu...");
+            Console.ReadKey();
+
         }
 
         static void RunKnapsack()
