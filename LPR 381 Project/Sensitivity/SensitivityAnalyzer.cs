@@ -77,37 +77,38 @@ namespace LPR_381_Project.Sensitivity
             }
         }
         //this is the method that calculates the shadow prices
-        private string shadowPrices(Models model, Output result)
+        //this is the method that calculates and displays the shadow prices
+private string shadowPrices(Models model, Output result)
+{
+    var writer = new StringBuilder();
+    writer.AppendLine("Shadow Prices");
+
+    // Check if the result contains calculated shadow prices.
+    // This assumes the solving algorithm populates this data.
+    if (result.ShadowPrices == null || result.ShadowPrices.Length != model.Constraints.Count)
+    {
+        writer.AppendLine("Shadow price data is not available for this solution.");
+        return writer.ToString();
+    }
+
+    for (int i = 0; i < model.Constraints.Count; i++)
+    {
+        double shadowPrice = result.ShadowPrices[i];
+        // For a standard Max problem with <= constraints, shadow prices are non-negative.
+        // For Min problems or >= constraints, they might be non-positive. The interpretation is key.
+        writer.AppendLine($"Constraint {i + 1} ({model.Constraints[i].Type}): Shadow Price = {Math.Round(shadowPrice, 3)}");
+
+        if (model.Sense == ObjectiveSense.Max)
         {
-            var writer = new StringBuilder();
-            writer.AppendLine("Shadow Prices");
-            
-            for (int i = 0; i < model.Constraints.Count; i++)
-            {
-                var constraint = model.Constraints[i];
-                double shadowPrice = shadowPricesCalculator(model, result, i);
-                
-                writer.AppendLine($"Constraint {i + 1}: Shadow Price = {Math.Round(shadowPrice, 3)}");
-                writer.AppendLine($"Increasing RHS value by 1 unit changes objective by {Math.Round(shadowPrice, 3)}");
-            }
-            
-            return sb.ToString();
+            writer.AppendLine($"  Increasing RHS by 1 unit will {(shadowPrice >= 0 ? "increase" : "decrease")} the objective by ~{Math.Round(Math.Abs(shadowPrice), 3)}");
         }
-        private double shadowPricesCalculator(Models model, Output result, int constraintIndex)
+        else // Minimization
         {
-            // Simplified shadow price calculation
-            // In practice, this would be extracted from the final tableau
-            
-            var constraint = model.Constraints[constraintIndex];
-            double newValue = 0;
-            
-            for (int i = 0; i < model.VariableNames.Length; i++)
-            {
-                if (result.Solution.TryGetValue(model.VariableNames[i], out double value))
-                {
-                    newValue += constraint.Coeffs[i] * value;
-                }
-            }
+            writer.AppendLine($"  Increasing RHS by 1 unit will {(shadowPrice <= 0 ? "decrease" : "increase")} the objective by ~{Math.Round(Math.Abs(shadowPrice), 3)}");
+        }
+    }
+    return writer.ToString();
+}
             
             double slack = constraint.Rhs - newValue;
             
