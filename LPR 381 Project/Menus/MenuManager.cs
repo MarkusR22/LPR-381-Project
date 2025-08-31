@@ -22,7 +22,7 @@ namespace LPR_381_Project.Menus
                 Console.WriteLine("3) Branch & Bound (Simplex)");
                 Console.WriteLine("4) Cutting Plane (Gomory)");
                 Console.WriteLine("5) Branch & Bound Knapsack");
-                Console.WriteLine("6) Sensitivity (basic placeholders)");
+                Console.WriteLine("6) Sensitivity");
                 Console.WriteLine("0) Exit");
                 Console.Write("Select (0-6): ");
                 var key = Console.ReadLine();
