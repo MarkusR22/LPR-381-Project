@@ -266,7 +266,21 @@ namespace LPR_381_Project.Menus
 
         static void RunSensitivity()
         {
-            // Minimal placeholders so the menu option exists; wire to your Sensitivity utilities later.
+            string inputPath = Path.Combine(ProjectRoot(), "Input", "sample.txt");
+
+    
+        var model = InputFileParser.Parse(inputPath);
+
+        var analyzer = new LPR_381_Project.Sensitivity.SensitivityAnalyzer(model);
+        analyzer.Analyze();
+
+        string outPath = NewOutputPath("Sensitivity");
+        File.WriteAllText(outPath, analyzer.Writer, Encoding.UTF8);
+
+        Console.WriteLine("Sensitivity analysis written to: " + outPath);
+        Console.ReadKey();
+
+            /* Minimal placeholders so the menu option exists; wire to your Sensitivity utilities later.
             var outPath = NewOutputPath("Sensitivity");
             using (var sw = new StreamWriter(outPath, false, Encoding.UTF8))
             {
@@ -279,7 +293,7 @@ namespace LPR_381_Project.Menus
                 sw.WriteLine("- Shadow prices");
                 sw.WriteLine("- Dual model / Strong–Weak duality checks");
             }
-            PauseDone(outPath);
+            // PauseDone(outPath);*/
         }
     }
 }
