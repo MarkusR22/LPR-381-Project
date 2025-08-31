@@ -269,7 +269,7 @@ namespace LPR_381_Project.Menus
             string inputPath = Path.Combine(ProjectRoot(), "Input", "sample.txt");
 
     
-        var model = InputFileParser.Parse(inputPath);
+        var model = InputFileParser.ParseFile(inputPath);
 
         var analyzer = new LPR_381_Project.Sensitivity.SensitivityAnalyzer(model);
         analyzer.Analyze();

@@ -1,1085 +1,675 @@
-﻿// File: LPR_381_Project/Sensitivity/SensitivityAnalyzer.cs
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
+using LPR_381_Project.Models; // LinearModel, Variable, Constraint
+using LPR_381_Project.Parsers; // if you want to reload files (optional)
+using LPR_381_Project.Solvers; // PrimalSimplexSolver/RevisedSimplexSolver/DualSimplex
+using LPR_381_Project.Utils;   // OutputWriter if needed
 
 namespace LPR_381_Project.Sensitivity
 {
-    
-    /// A defensive sensitivity analysis helper that tries to integrate with the repository's
-    /// LinearModel and RevisedSimplexSolver. It will:
-    ///  - solve the model using the solver found in the assembly
-    ///  - extract variable values, objective value, reduced costs, shadow prices
-    ///  - compute basis-preserving allowable increase/decrease ranges numerically
+    /// <summary>
+    /// A self-contained, menu-driven Sensitivity Analyzer that:
+    ///  - does NOT rely on any of your previous Sensitivity code
+    ///  - integrates with your Console menu
+    ///  - uses the existing Simplex solvers to recompute solutions under perturbations
+    ///  - implements all options listed in your PDF brief
     /// 
-    /// The class deliberately uses reflection to adapt to different repository APIs.
-    /// The final textual report is exposed through the Writer property.
+    /// IMPORTANT: This class is designed to be a drop-in. If any type/namespace names differ in your repo,
+    /// just adjust the using statements and the adapter below.
     /// </summary>
-    public class SensitivityAnalyzer
+    public static class SensitivityAnalyzer
     {
-        private const double Tolerance = 1e-9;
-        private const double LargeSearchLimit = 1e6;
-        private const double PerturbationBase = 1e-6;
-
-        // The StringBuilder must be called "writer" per user request.
-        private readonly StringBuilder writer = new StringBuilder();
-
-        // Expose a convenient property for the finished report
-        public string Writer => writer.ToString();
-
-        // The model object (from repository). We keep it as object because we don't know exact type.
-        private readonly object model;
-
-        private readonly object solverInstance;
-        private readonly MethodInfo solveMethod;
-
-        public SensitivityAnalyzer(object linearModel)
+        // ---- Public entrypoint called from your MenuManager ----
+        public static void Run(LinearModel baseModel)
         {
-            this.model = linearModel ?? throw new ArgumentNullException(nameof(linearModel));
-
-            // Find a RevisedSimplexSolver-like type in loaded assemblies (search current assembly first)
-            (solverInstance, solveMethod) = CreateSolverInstanceAndMethod();
-            if (solverInstance == null || solveMethod == null)
+            if (baseModel == null)
             {
-                writer.AppendLine("Warning: Could not find a RevisedSimplexSolver or Solve(model) method via reflection.");
-                writer.AppendLine("The analyzer will still try to inspect the model (values and coefficients) but cannot re-solve the model.");
-            }
-        }
-
-        /// <summary>
-        /// Main entry: perform analysis and populate writer.
-        /// </summary>
-        public void Analyze()
-        {
-            writer.Clear();
-            writer.AppendLine("=== Sensitivity Analysis Report ===");
-            writer.AppendLine($"Generated: {DateTime.UtcNow:u}");
-            writer.AppendLine();
-
-            
-            PrintModelSummary();
-
-            object baseSolution = null;
-            if (solveMethod != null)
-            {
-                baseSolution = SolveModelWithReflection(model);
+                Console.WriteLine("No model is loaded. Please load a model first.");
+                Console.WriteLine("Press any key to return to the main menu...");
+                Console.ReadKey();
+                return;
             }
 
-            // Extract primary results from either model or solver
-            var varNames = TryGetVariableNames(model);
-            var objectiveCoeffs = TryGetObjectiveCoefficients(model);
-            var constraintRHS = TryGetConstraintRHS(model);
-            var constraintNames = TryGetConstraintNames(model);
-
-            // Try to get the solution (variable values, objective) either from baseSolution or model
-            double[] variableValues = TryExtractVariableValues(baseSolution) ?? TryExtractVariableValuesFromModel(model);
-            double? objectiveValue = TryExtractObjectiveValue(baseSolution); //?? TryExtractObjectiveFromModel(model);
-
-            if (variableValues != null && variableValues.Length > 0)
+            // Choose a default solver adapter (RevisedSimplex preferred if available)
+            ISolverAdapter solver = TryMakeBestSolver();
+            if (solver == null)
             {
-                writer.AppendLine("Optimal variable values:");
-                for (int i = 0; i < variableValues.Length; i++)
-                {
-                    string name = (varNames != null && i < varNames.Length) ? varNames[i] : $"x{i + 1}";
-                    writer.AppendLine($"  {name} = {variableValues[i]:F6}");
-                }
-                writer.AppendLine();
-            }
-            else
-            {
-                writer.AppendLine("Variable values: not available from solver/model.");
-                writer.AppendLine();
+                Console.WriteLine("No compatible solver found. Ensure RevisedSimplexSolver or PrimalSimplexSolver exists.");
+                Console.WriteLine("Press any key to return to the main menu...");
+                Console.ReadKey();
+                return;
             }
 
-            if (objectiveValue.HasValue)
+            while (true)
             {
-                writer.AppendLine($"Objective value (at reported solution): {objectiveValue.Value:F6}");
-                writer.AppendLine();
-            }
-            else
-            {
-                writer.AppendLine("Objective value: not available from solver/model.");
-                writer.AppendLine();
-            }
+                Console.Clear();
+                Console.WriteLine("==============================");
+                Console.WriteLine("     Sensitivity Analysis     ");
+                Console.WriteLine("==============================");
+                Console.WriteLine("Model: " + (baseModel.Name ?? "(unnamed)"));
+                Console.WriteLine();
+                Console.WriteLine("1) Display range of a selected Non-Basic Variable");
+                Console.WriteLine("2) Apply + display change to a selected Non-Basic Variable coefficient");
+                Console.WriteLine("3) Display range of a selected Basic Variable");
+                Console.WriteLine("4) Apply + display change to a selected Basic Variable coefficient");
+                Console.WriteLine("5) Display range of a selected constraint RHS (b)");
+                Console.WriteLine("6) Apply + display change to a selected constraint RHS (b)");
+                Console.WriteLine("7) Display range of a selected variable within a Non-Basic Variable column (tech. coeff a_ij)");
+                Console.WriteLine("8) Apply + display change to a selected technical coefficient a_ij");
+                Console.WriteLine("9) Add a new activity (variable) to the optimal solution");
+                Console.WriteLine("10) Add a new constraint to the optimal solution");
+                Console.WriteLine("11) Display shadow prices (approx.)");
+                Console.WriteLine("12) Duality: build dual model");
+                Console.WriteLine("13) Duality: solve dual model");
+                Console.WriteLine("14) Duality: verify strong/weak duality (compare primal vs dual optima)");
+                Console.WriteLine("0) Back");
+                Console.Write("\nSelect an option: ");
+                var pick = Console.ReadLine();
 
-            // Reduced costs & shadow prices: attempt to get from baseSolution then fallback to tableau or model
-            double[] reducedCosts = TryExtractReducedCosts(baseSolution);
-            double[] shadowPrices = TryExtractShadowPrices(baseSolution);
+                if (pick == "0") break;
 
-            if (reducedCosts != null)
-            {
-                writer.AppendLine("Reduced costs:");
-                for (int i = 0; i < reducedCosts.Length; i++)
-                {
-                    string name = (varNames != null && i < varNames.Length) ? varNames[i] : $"x{i + 1}";
-                    writer.AppendLine($"  Reduced cost {name}: {reducedCosts[i]:F6}");
-                }
-                writer.AppendLine();
-            }
-            else
-            {
-                writer.AppendLine("Reduced costs: not available (couldn't extract from solver).");
-                writer.AppendLine();
-            }
-
-            if (shadowPrices != null)
-            {
-                writer.AppendLine("Shadow prices (dual values) for constraints:");
-                for (int i = 0; i < shadowPrices.Length; i++)
-                {
-                    string cname = (constraintNames != null && i < constraintNames.Length) ? constraintNames[i] : $"c{i + 1}";
-                    writer.AppendLine($"  {cname}: {shadowPrices[i]:F6}");
-                }
-                writer.AppendLine();
-            }
-            else
-            {
-                writer.AppendLine("Shadow prices: not available (couldn't extract from solver).");
-                writer.AppendLine();
-            }
-
-            // Allowable increase/decrease: numeric basis-preserving search via re-solving
-            if (solveMethod != null)
-            {
-                writer.AppendLine("Computing basis-preserving allowable increases/decreases (numeric re-solve).");
-                writer.AppendLine("This checks how much each coefficient or RHS can change before the basis changes.");
-                writer.AppendLine();
-
-                // Objective coefficients
-                if (objectiveCoeffs != null && variableValues != null)
-                {
-                    for (int i = 0; i < objectiveCoeffs.Length; i++)
-                    {
-                        string varName = (varNames != null && i < varNames.Length) ? varNames[i] : $"x{i + 1}";
-                        var (dec, inc) = FindCoefficientRangePreservingBasis(i, objectiveCoeffs[i], model, baseSolution);
-                        writer.AppendLine($"Objective coef for {varName}: base={objectiveCoeffs[i]:F6}, allowable decrease = {dec?.ToString("F6") ?? "N/A"}, allowable increase = {inc?.ToString("F6") ?? "N/A"}");
-                    }
-                    writer.AppendLine();
-                }
-                else
-                {
-                    writer.AppendLine("Cannot compute objective coefficient ranges: objective coefficients or variable count not found.");
-                    writer.AppendLine();
-                }
-
-                // RHS ranges
-                if (constraintRHS != null)
-                {
-                    for (int i = 0; i < constraintRHS.Length; i++)
-                    {
-                        string cname = (constraintNames != null && i < constraintNames.Length) ? constraintNames[i] : $"c{i + 1}";
-                        var (dec, inc) = FindRHSRangePreservingBasis(i, constraintRHS[i], model, baseSolution);
-                        writer.AppendLine($"RHS for {cname}: base={constraintRHS[i]:F6}, allowable decrease = {dec?.ToString("F6") ?? "N/A"}, allowable increase = {inc?.ToString("F6") ?? "N/A"}");
-                    }
-                    writer.AppendLine();
-                }
-                else
-                {
-                    writer.AppendLine("Cannot compute RHS ranges: constraint RHS not found.");
-                    writer.AppendLine();
-                }
-            }
-            else
-            {
-                writer.AppendLine("Skipping numeric allowable-range analysis — solver not found or Solve method unavailable.");
-                writer.AppendLine();
-            }
-
-            writer.AppendLine("End of report.");
-        }
-
-        #region Reflection & helper methods
-
-        
-        private (object instance, MethodInfo solveMethod) CreateSolverInstanceAndMethod()
-        {
-            // Search loaded assemblies for a type named RevisedSimplexSolver or RevisedPrimalSimplex or SimplexSolver
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            Type solverType = null;
-            foreach (var asm in assemblies)
-            {
                 try
                 {
-                    solverType = asm.GetTypes().FirstOrDefault(t => string.Equals(t.Name, "RevisedSimplexSolver", StringComparison.OrdinalIgnoreCase)
-                                                                    || string.Equals(t.Name, "RevisedPrimalSimplex", StringComparison.OrdinalIgnoreCase)
-                                                                    || string.Equals(t.Name, "RevisedSimplex", StringComparison.OrdinalIgnoreCase)
-                                                                    || string.Equals(t.Name, "SimplexSolver", StringComparison.OrdinalIgnoreCase));
-                    if (solverType != null) break;
-                }
-                catch
-                {
-                    // ignore assemblies we cannot inspect
-                }
-            }
-
-            if (solverType == null) return (null, null);
-
-            // find a parameterless constructor
-            var ctor = solverType.GetConstructor(Type.EmptyTypes);
-            object instance = null;
-            if (ctor != null)
-            {
-                instance = ctor.Invoke(null);
-            }
-            else
-            {
-                // try to find any constructor and pass nulls (best-effort)
-                var cinfo = solverType.GetConstructors().FirstOrDefault();
-                if (cinfo != null)
-                {
-                    var pars = cinfo.GetParameters().Select(p => GetDefault(p.ParameterType)).ToArray();
-                    try
+                    switch (pick)
                     {
-                        instance = cinfo.Invoke(pars);
-                    }
-                    catch
-                    {
-                        instance = null;
+                        case "1": RangeOfObjectiveCoefficient(baseModel, solver, onlyNonBasic: true); break;
+                        case "2": ApplyChangeToObjectiveCoefficient(baseModel, solver, onlyNonBasic: true); break;
+                        case "3": RangeOfObjectiveCoefficient(baseModel, solver, onlyNonBasic: false, onlyBasic: true); break;
+                        case "4": ApplyChangeToObjectiveCoefficient(baseModel, solver, onlyNonBasic: false, onlyBasic: true); break;
+                        case "5": RangeOfRHS(baseModel, solver); break;
+                        case "6": ApplyChangeToRHS(baseModel, solver); break;
+                        case "7": RangeOfTechCoefficient(baseModel, solver); break;
+                        case "8": ApplyChangeToTechCoefficient(baseModel, solver); break;
+                        case "9": AddNewVariable(baseModel, solver); break;
+                        case "10": AddNewConstraint(baseModel, solver); break;
+                        case "11": DisplayShadowPrices(baseModel, solver); break;
+                        case "12": BuildDual(baseModel); break;
+                        case "13": SolveDual(baseModel, solver); break;
+                        case "14": VerifyDuality(baseModel, solver); break;
+                        default:
+                            Console.WriteLine("Invalid selection.");
+                            Pause();
+                            break;
                     }
                 }
-            }
-
-            // find a Solve(...) method that accepts one parameter (the model) or a Solve() that uses previously set model
-            MethodInfo solve = solverType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                .FirstOrDefault(m =>
+                catch (Exception ex)
                 {
-                    var ps = m.GetParameters();
-                    return string.Equals(m.Name, "Solve", StringComparison.OrdinalIgnoreCase) && (ps.Length == 1 || ps.Length == 0);
-                });
-
-            return (instance, solve);
-        }
-
-        private object GetDefault(Type t)
-        {
-            return t.IsValueType ? Activator.CreateInstance(t) : null;
-        }
-
-        private object SolveModelWithReflection(object modelToSolve)
-        {
-            if (solveMethod == null) return null;
-            try
-            {
-                // If Solve has one param, invoke with model; else if parameterless, try setting a Model property then call Solve()
-                var parms = solveMethod.GetParameters();
-                if (parms.Length == 1)
-                {
-                    return solveMethod.Invoke(solverInstance, new object[] { modelToSolve });
+                    Console.WriteLine("Error: " + ex.Message);
+                    Pause();
                 }
-                else
-                {
-                    // try set property "Model" or "linearModel" on solver
-                    var sType = solverInstance.GetType();
-                    var modelProp = sType.GetProperty("Model") ?? sType.GetProperty("linearModel") ?? sType.GetField("Model") as MemberInfo;
-                    if (modelProp != null)
-                    {
-                        if (modelProp is PropertyInfo pi && pi.CanWrite)
-                        {
-                            pi.SetValue(solverInstance, modelToSolve);
-                        }
-                        else if (modelProp is FieldInfo fi)
-                        {
-                            fi.SetValue(solverInstance, modelToSolve);
-                        }
-                    }
-
-                    var ret = solveMethod.Invoke(solverInstance, null);
-                    return ret;
-                }
-            }
-            catch (TargetInvocationException tie)
-            {
-                writer.AppendLine("Solver invocation raised an exception: " + tie.InnerException?.Message);
-                return null;
-            }
-            catch (Exception ex)
-            {
-                writer.AppendLine("Solver invocation failed: " + ex.Message);
-                return null;
             }
         }
 
-        /// <summary>
-        /// Basic summary print: number of variables/constraints if discoverable.
-        /// </summary>
-        private void PrintModelSummary()
+        // ----------------------- Core operations -----------------------
+        // NOTE: The implementation uses repeated solves to empirically determine ranges.
+        // This avoids tight coupling to any specific tableau internals and works with your solvers as-is.
+
+        private static void RangeOfObjectiveCoefficient(LinearModel baseModel, ISolverAdapter solver, bool onlyNonBasic = false, bool onlyBasic = false)
         {
-            try
+            var (solution, model) = SolveBase(baseModel, solver);
+            var basicSet = solution.BasicVariableNames;
+
+            int idx = AskForVariableIndex(model, v =>
             {
-                int? nVars = TryGetIntFromModel("NumberOfVariables", "NumVariables", "VariablesCount", "N");
-                int? nCons = TryGetIntFromModel("NumberOfConstraints", "ConstraintsCount", "M");
-                if (nVars.HasValue) writer.AppendLine($"Model: {nVars.Value} variables");
-                if (nCons.HasValue) writer.AppendLine($"Model: {nCons.Value} constraints");
-                if (!nVars.HasValue && !nCons.HasValue)
-                {
-                    writer.AppendLine("Model summary: could not detect variable/constraint counts via reflection.");
-                }
-                writer.AppendLine();
-            }
-            catch (Exception ex)
-            {
-                writer.AppendLine("Error while printing model summary: " + ex.Message);
-            }
-        }
-
-        private int? TryGetIntFromModel(params string[] candidateNames)
-        {
-            foreach (var name in candidateNames)
-            {
-                var f = model.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null && f.FieldType == typeof(int))
-                    return (int)f.GetValue(model);
-
-                var p = model.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null && (p.PropertyType == typeof(int) || p.PropertyType == typeof(int?)))
-                    return (int?)p.GetValue(model) ?? null;
-            }
-            return null;
-        }
-
-        private string[] TryGetVariableNames(object modelObj)
-        {
-            if (modelObj == null) return null;
-            // Look for property/field named VariableNames, VarNames, Names, ColumnNames
-            var candidates = new[] { "VariableNames", "VarNames", "Names", "ColumnNames", "VariableLabels" };
-            foreach (var name in candidates)
-            {
-                var p = modelObj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
-                {
-                    var val = p.GetValue(modelObj);
-                    if (val is IEnumerable<string> sEnum) return sEnum.ToArray();
-                    if (val is string[] sArr) return sArr;
-                    if (val is object[] oArr) return oArr.Select(o => o?.ToString() ?? "").ToArray();
-                }
-                var f = modelObj.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var val = f.GetValue(modelObj);
-                    if (val is IEnumerable<string> sEnum) return sEnum.ToArray();
-                    if (val is string[] sArr) return sArr;
-                    if (val is object[] oArr) return oArr.Select(o => o?.ToString() ?? "").ToArray();
-                }
-            }
-            // if not found, attempt from objective coeff length
-            var coeffs = TryGetObjectiveCoefficients(modelObj);
-            if (coeffs != null) return Enumerable.Range(1, coeffs.Length).Select(i => $"x{i}").ToArray();
-            return null;
-        }
-
-        private string[] TryGetConstraintNames(object modelObj)
-        {
-            if (modelObj == null) return null;
-            var candidates = new[] { "ConstraintNames", "ConNames", "RowNames" };
-            foreach (var name in candidates)
-            {
-                var p = modelObj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
-                {
-                    var val = p.GetValue(modelObj);
-                    if (val is IEnumerable<string> sEnum) return sEnum.ToArray();
-                    if (val is string[] sArr) return sArr;
-                    if (val is object[] oArr) return oArr.Select(o => o?.ToString() ?? "").ToArray();
-                }
-                var f = modelObj.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var val = f.GetValue(modelObj);
-                    if (val is IEnumerable<string> sEnum) return sEnum.ToArray();
-                    if (val is string[] sArr) return sArr;
-                    if (val is object[] oArr) return oArr.Select(o => o?.ToString() ?? "").ToArray();
-                }
-            }
-            // fallback to enumerated names
-            var rhs = TryGetConstraintRHS(modelObj);
-            if (rhs != null) return Enumerable.Range(1, rhs.Length).Select(i => $"c{i}").ToArray();
-            return null;
-        }
-
-        private double[] TryGetObjectiveCoefficients(object modelObj)
-        {
-            if (modelObj == null) return null;
-            var candidates = new[] { "ObjectiveCoefficients", "C", "ObjCoefficients", "Objective", "ObjectiveCoeff" };
-            foreach (var name in candidates)
-            {
-                var p = modelObj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
-                {
-                    var val = p.GetValue(modelObj);
-                    var arr = ConvertToDoubleArray(val);
-                    if (arr != null) return arr;
-                }
-                var f = modelObj.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var val = f.GetValue(modelObj);
-                    var arr = ConvertToDoubleArray(val);
-                    if (arr != null) return arr;
-                }
-            }
-            return null;
-        }
-
-        private double[] TryGetConstraintRHS(object modelObj)
-        {
-            if (modelObj == null) return null;
-            var candidates = new[] { "Rhs", "RHS", "ConstraintRHS", "B", "RightHandSide" };
-            foreach (var name in candidates)
-            {
-                var p = modelObj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
-                {
-                    var val = p.GetValue(modelObj);
-                    var arr = ConvertToDoubleArray(val);
-                    if (arr != null) return arr;
-                }
-                var f = modelObj.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var val = f.GetValue(modelObj);
-                    var arr = ConvertToDoubleArray(val);
-                    if (arr != null) return arr;
-                }
-            }
-            return null;
-        }
-
-        private double[] ConvertToDoubleArray(object val)
-        {
-            if (val == null) return null;
-            if (val is double[] darr) return darr;
-            if (val is float[] farr) return farr.Select(x => (double)x).ToArray();
-            if (val is int[] iarr) return iarr.Select(x => (double)x).ToArray();
-            if (val is IEnumerable<double> ede) return ede.ToArray();
-            if (val is IEnumerable<object> eo) return eo.Select(o => Convert.ToDouble(o)).ToArray();
-            return null;
-        }
-
-        /// <summary>
-        /// Try to extract solved variable values from solver result object via reflection.
-        /// Common property names: Solution, VariableValues, X, PrimalVariables, Primal
-        /// If solver returns void but sets fields on solver, try to find them on the solverInstance.
-        /// </summary>
-        private double[] TryExtractVariableValues(object solverReturnOrResult)
-        {
-            // If solverReturnOrResult is null, try to check solverInstance fields
-            if (solverReturnOrResult == null)
-            {
-                if (solverInstance != null)
-                {
-                    var candidates = new[] { "Solution", "VariableValues", "X", "Primal", "PrimalValues", "Variables" };
-                    foreach (var name in candidates)
-                    {
-                        var p = solverInstance.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (p != null)
-                        {
-                            var arr = ConvertToDoubleArray(p.GetValue(solverInstance));
-                            if (arr != null) return arr;
-                        }
-                        var f = solverInstance.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (f != null)
-                        {
-                            var arr = ConvertToDoubleArray(f.GetValue(solverInstance));
-                            if (arr != null) return arr;
-                        }
-                    }
-                }
-                return null;
-            }
-
-            // else inspect the return object
-            var candidatesReturn = new[] { "Solution", "VariableValues", "X", "Primal", "PrimalVariables", "PrimalValues", "Variables" };
-            foreach (var name in candidatesReturn)
-            {
-                var p = solverReturnOrResult.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
-                {
-                    var arr = ConvertToDoubleArray(p.GetValue(solverReturnOrResult));
-                    if (arr != null) return arr;
-                }
-                var f = solverReturnOrResult.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var arr = ConvertToDoubleArray(f.GetValue(solverReturnOrResult));
-                    if (arr != null) return arr;
-                }
-            }
-
-            // Maybe return object itself is an enumerable of numbers
-            var conv = ConvertToDoubleArray(solverReturnOrResult);
-            if (conv != null) return conv;
-
-            return null;
-        }
-
-        private double[] TryExtractVariableValuesFromModel(object modelObj)
-        {
-            if (modelObj == null) return null;
-            // Some models store an initial or lastSolution inside them
-            var candidates = new[] { "LastSolution", "InitialSolution", "Solution", "VariableValues", "X" };
-            foreach (var name in candidates)
-            {
-                var p = modelObj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
-                {
-                    var arr = ConvertToDoubleArray(p.GetValue(modelObj));
-                    if (arr != null) return arr;
-                }
-                var f = modelObj.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var arr = ConvertToDoubleArray(f.GetValue(modelObj));
-                    if (arr != null) return arr;
-                }
-            }
-            return null;
-        }
-
-        private double? TryExtractObjectiveValue(object solverReturnOrResult)
-        {
-            if (solverReturnOrResult == null)
-            {
-                // try solverInstance or model
-                var names = new[] { "ObjectiveValue", "Objective", "ObjectiveVal", "Z", "Cost" };
-                foreach (var name in names)
-                {
-                    var p = solverInstance?.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (p != null && p.PropertyType == typeof(double)) return (double)p.GetValue(solverInstance);
-                    var f = solverInstance?.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (f != null && f.FieldType == typeof(double)) return (double)f.GetValue(solverInstance);
-
-                    var pm = model.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (pm != null && pm.PropertyType == typeof(double)) return (double?)pm.GetValue(model);
-                    var fm = model.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (fm != null && fm.FieldType == typeof(double)) return (double)fm.GetValue(model);
-                }
-                return null;
-            }
-
-            var candidates = new[] { "ObjectiveValue", "Objective", "ObjectiveVal", "Z", "Cost" };
-            foreach (var name in candidates)
-            {
-                var p = solverReturnOrResult.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
-                {
-                    var v = p.GetValue(solverReturnOrResult);
-                    if (v is double d) return d;
-                    if (v is float x) return (double)x;
-                    if (v != null && Double.TryParse(v.ToString(), out var parsed)) return parsed;
-                }
-                var f = solverReturnOrResult.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var vv = f.GetValue(solverReturnOrResult);
-                    if (vv is double d) return d;
-                    if (vv is float f2) return (double)f2;
-                    if (vv != null && Double.TryParse(vv.ToString(), out var parsed)) return parsed;
-                }
-            }
-            return null;
-        }
-
-        private double[] TryExtractReducedCosts(object solverReturnOrResult)
-        {
-            // Common property names: ReducedCosts, ReducedCost, DualReducedCosts, RC
-            var names = new[] { "ReducedCosts", "ReducedCost", "RC", "DualReducedCosts", "Reduced" };
-            // Check solver return, solver instance, model
-            var sources = new[] { solverReturnOrResult, solverInstance, model };
-            foreach (var src in sources)
-            {
-                if (src == null) continue;
-                foreach (var name in names)
-                {
-                    var p = src.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (p != null)
-                    {
-                        var arr = ConvertToDoubleArray(p.GetValue(src));
-                        if (arr != null) return arr;
-                    }
-                    var f = src.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (f != null)
-                    {
-                        var arr = ConvertToDoubleArray(f.GetValue(src));
-                        if (arr != null) return arr;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        private double[] TryExtractShadowPrices(object solverReturnOrResult)
-        {
-            // Common property names: ShadowPrices, Duals, Pi, DualValues, LagrangeMultipliers
-            var names = new[] { "ShadowPrices", "Duals", "DualValues", "Pi", "LagrangeMultipliers", "Multipliers" };
-            var sources = new[] { solverReturnOrResult, solverInstance, model };
-            foreach (var src in sources)
-            {
-                if (src == null) continue;
-                foreach (var name in names)
-                {
-                    var p = src.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (p != null)
-                    {
-                        var arr = ConvertToDoubleArray(p.GetValue(src));
-                        if (arr != null) return arr;
-                    }
-                    var f = src.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (f != null)
-                    {
-                        var arr = ConvertToDoubleArray(f.GetValue(src));
-                        if (arr != null) return arr;
-                    }
-                }
-            }
-            return null;
-        }
-
-        #endregion
-
-        #region Basis-preserving numeric search helpers
-
-        /// <summary>
-        /// Compare if two solver results share the same basis.
-        /// Attempts multiple heuristics:
-        ///  - look for explicit Basis or BasisIndices arrays in objects
-        ///  - try to detect basic columns by searching for unit columns in returned tableau / matrix
-        ///  - else fallback to comparing variable values (rounded) — not ideal but a last resort
-        /// </summary>
-        private bool IsSameBasis(object baseResult, object newResult)
-        {
-            if (baseResult == null || newResult == null) return false;
-
-            // 1) Try to find BasisIndices arrays
-            var basisNames = new[] { "Basis", "BasisIndices", "BasicIndexes", "BasicVariables", "BasisVars" };
-            foreach (var name in basisNames)
-            {
-                var p1 = baseResult.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                var p2 = newResult.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p1 != null && p2 != null)
-                {
-                    var a1 = ConvertToIntArray(p1.GetValue(baseResult));
-                    var a2 = ConvertToIntArray(p2.GetValue(newResult));
-                    if (a1 != null && a2 != null)
-                    {
-                        return a1.SequenceEqual(a2);
-                    }
-                }
-
-                var f1 = baseResult.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                var f2 = newResult.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f1 != null && f2 != null)
-                {
-                    var a1 = ConvertToIntArray(f1.GetValue(baseResult));
-                    var a2 = ConvertToIntArray(f2.GetValue(newResult));
-                    if (a1 != null && a2 != null)
-                    {
-                        return a1.SequenceEqual(a2);
-                    }
-                }
-            }
-
-            // 2) Try to find tableau matrices and detect unit columns
-            var tableauNames = new[] { "FinalTableau", "Tableau", "Tableaux", "Table" };
-            foreach (var name in tableauNames)
-            {
-                var p1 = baseResult.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                var p2 = newResult.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p1 != null && p2 != null)
-                {
-                    var t1 = p1.GetValue(baseResult);
-                    var t2 = p2.GetValue(newResult);
-                    var mat1 = ConvertTo2DDoubleArray(t1);
-                    var mat2 = ConvertTo2DDoubleArray(t2);
-                    if (mat1 != null && mat2 != null)
-                    {
-                        // derive basis columns (indices) by finding unit columns in mat (excluding objective row if present)
-                        var b1 = FindUnitColumnIndices(mat1);
-                        var b2 = FindUnitColumnIndices(mat2);
-                        if (b1 != null && b2 != null)
-                            return b1.SequenceEqual(b2);
-                    }
-                }
-            }
-
-            // 3) Fallback: compare rounded variable indices (which variables are nonzero)
-            var v1 = TryExtractVariableValues(baseResult) ?? TryExtractVariableValuesFromModel(model);
-            var v2 = TryExtractVariableValues(newResult) ?? TryExtractVariableValuesFromModel(model);
-            if (v1 != null && v2 != null && v1.Length == v2.Length)
-            {
-                for (int i = 0; i < v1.Length; i++)
-                {
-                    double a = Math.Round(v1[i], 6);
-                    double b = Math.Round(v2[i], 6);
-                    if (!a.Equals(b)) return false;
-                }
+                if (onlyNonBasic) return !basicSet.Contains(v.Name);
+                if (onlyBasic) return basicSet.Contains(v.Name);
                 return true;
-            }
+            }, label: onlyNonBasic ? "non-basic" : onlyBasic ? "basic" : "");
 
-            // If nothing matched conservatively assume changed basis
-            return false;
+            var varName = model.Variables[idx].Name;
+            double originalC = model.ObjectiveCoefficients[idx];
+
+            // Search allowable decrease/increase for c_j while keeping basis unchanged
+            var (minC, maxC) = OneDimensionalRange(model, solver, originalC, set: val => model.ObjectiveCoefficients[idx] = val,
+                basisSignature: () => BasisSignature(Solve(baseModel: null, workingModel: model, solver: solver).solution));
+
+            Console.WriteLine($"\nRange for objective coefficient c[{varName}] with current basis fixed:");
+            Console.WriteLine($"  Allowable Decrease: down to {minC:F6} (current {originalC})");
+            Console.WriteLine($"  Allowable Increase: up to   {maxC:F6} (current {originalC})");
+            // Restore
+            model.ObjectiveCoefficients[idx] = originalC;
+            Pause();
         }
 
-        private int[] ConvertToIntArray(object val)
+        private static void ApplyChangeToObjectiveCoefficient(LinearModel baseModel, ISolverAdapter solver, bool onlyNonBasic = false, bool onlyBasic = false)
         {
-            if (val == null) return null;
-            if (val is int[] ia) return ia;
-            if (val is IEnumerable<int> ie) return ie.ToArray();
-            if (val is IEnumerable<object> eo) return eo.Select(o => Convert.ToInt32(o)).ToArray();
-            if (val is IEnumerable<long> el) return el.Select(x => (int)x).ToArray();
+            var (solution, model) = SolveBase(baseModel, solver);
+            var basicSet = solution.BasicVariableNames;
+
+            int idx = AskForVariableIndex(model, v =>
+            {
+                if (onlyNonBasic) return !basicSet.Contains(v.Name);
+                if (onlyBasic) return basicSet.Contains(v.Name);
+                return true;
+            }, label: onlyNonBasic ? "non-basic" : onlyBasic ? "basic" : "");
+
+            var varName = model.Variables[idx].Name;
+            double originalC = model.ObjectiveCoefficients[idx];
+            Console.Write($"Enter new value for c[{varName}] (current {originalC}): ");
+            double newC = ReadDouble();
+
+            model.ObjectiveCoefficients[idx] = newC;
+            var (newSol, _) = Solve(baseModel: null, workingModel: model, solver: solver);
+
+            Console.WriteLine("\nNew optimal solution after change to objective coefficient:");
+            PrintSolution(newSol);
+
+            // Restore
+            model.ObjectiveCoefficients[idx] = originalC;
+            Pause();
+        }
+
+        private static void RangeOfRHS(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var (solution, model) = SolveBase(baseModel, solver);
+            int cid = AskForConstraintIndex(model);
+            double originalB = model.Constraints[cid].RHS;
+
+            var (minB, maxB) = OneDimensionalRange(model, solver, originalB, set: val => model.Constraints[cid].RHS = val,
+                basisSignature: () => BasisSignature(Solve(baseModel: null, workingModel: model, solver: solver).solution));
+
+            Console.WriteLine($"\nRange for RHS b[{cid}] with current basis fixed:");
+            Console.WriteLine($"  Allowable Decrease: down to {minB:F6} (current {originalB})");
+            Console.WriteLine($"  Allowable Increase: up to   {maxB:F6} (current {originalB})");
+
+            model.Constraints[cid].RHS = originalB;
+            Pause();
+        }
+
+        private static void ApplyChangeToRHS(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var (solution, model) = SolveBase(baseModel, solver);
+            int cid = AskForConstraintIndex(model);
+            double originalB = model.Constraints[cid].RHS;
+            Console.Write($"Enter new value for RHS of constraint #{cid} (current {originalB}): ");
+            double newB = ReadDouble();
+            model.Constraints[cid].RHS = newB;
+            var (newSol, _) = Solve(baseModel: null, workingModel: model, solver: solver);
+
+            Console.WriteLine("\nNew optimal solution after RHS change:");
+            PrintSolution(newSol);
+
+            model.Constraints[cid].RHS = originalB;
+            Pause();
+        }
+
+        private static void RangeOfTechCoefficient(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var (solution, model) = SolveBase(baseModel, solver);
+            int cid = AskForConstraintIndex(model);
+            int vid = AskForVariableIndex(model);
+            double originalAij = model.Constraints[cid].Coefficients[vid];
+
+            var (minA, maxA) = OneDimensionalRange(model, solver, originalAij, set: val => model.Constraints[cid].Coefficients[vid] = val,
+                basisSignature: () => BasisSignature(Solve(baseModel: null, workingModel: model, solver: solver).solution));
+
+            Console.WriteLine($"\nRange for technical coefficient a[{cid},{vid}] with current basis fixed:");
+            Console.WriteLine($"  Allowable Decrease: down to {minA:F6} (current {originalAij})");
+            Console.WriteLine($"  Allowable Increase: up to   {maxA:F6} (current {originalAij})");
+
+            model.Constraints[cid].Coefficients[vid] = originalAij;
+            Pause();
+        }
+
+        private static void ApplyChangeToTechCoefficient(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var (solution, model) = SolveBase(baseModel, solver);
+            int cid = AskForConstraintIndex(model);
+            int vid = AskForVariableIndex(model);
+            double originalAij = model.Constraints[cid].Coefficients[vid];
+            Console.Write($"Enter new value for a[{cid},{vid}] (current {originalAij}): ");
+            double newA = ReadDouble();
+            model.Constraints[cid].Coefficients[vid] = newA;
+            var (newSol, _) = Solve(baseModel: null, workingModel: model, solver: solver);
+
+            Console.WriteLine("\nNew optimal solution after coefficient change:");
+            PrintSolution(newSol);
+
+            model.Constraints[cid].Coefficients[vid] = originalAij;
+            Pause();
+        }
+
+        private static void AddNewVariable(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var (_, model) = SolveBase(baseModel, solver);
+            Console.Write("Enter name for new variable: ");
+            string name = Console.ReadLine()?.Trim();
+            Console.Write("Enter objective coefficient (c): ");
+            double c = ReadDouble();
+
+            double[] col = new double[model.Constraints.Count];
+            for (int i = 0; i < model.Constraints.Count; i++)
+            {
+                Console.Write($"a[{i},{name}] = ");
+                col[i] = ReadDouble();
+            }
+
+            var v = new Variable { Name = string.IsNullOrWhiteSpace(name) ? $"x{model.Variables.Count}" : name };
+            model.Variables.Add(v);
+            model.ObjectiveCoefficients.Add(c);
+            for (int i = 0; i < model.Constraints.Count; i++)
+                model.Constraints[i].Coefficients.Add(col[i]);
+
+            var (newSol, _) = Solve(baseModel: null, workingModel: model, solver: solver);
+            Console.WriteLine("\nNew optimal solution after adding the activity:");
+            PrintSolution(newSol);
+            Pause();
+        }
+
+        private static void AddNewConstraint(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var (_, model) = SolveBase(baseModel, solver);
+            Console.WriteLine("Enter the new constraint coefficients (for each variable in order):");
+            var coeffs = new List<double>();
+            for (int j = 0; j < model.Variables.Count; j++)
+            {
+                Console.Write($"a[new,{model.Variables[j].Name}] = ");
+                coeffs.Add(ReadDouble());
+            }
+            Console.Write("Enter RHS (b): ");
+            double b = ReadDouble();
+
+            var newC = new Constraint
+            {
+                Coefficients = coeffs,
+                RHS = b,
+                Sense = ConstraintSense.LessOrEqual // default; adjust if you have other senses and want input
+            };
+            model.Constraints.Add(newC);
+
+            var (newSol, _) = Solve(baseModel: null, workingModel: model, solver: solver);
+            Console.WriteLine("\nNew optimal solution after adding the constraint:");
+            PrintSolution(newSol);
+            Pause();
+        }
+
+        private static void DisplayShadowPrices(LinearModel baseModel, ISolverAdapter solver)
+        {
+            // If solver exposes duals, grab them. Otherwise approximate via finite differences in RHS.
+            var (sol, model) = SolveBase(baseModel, solver);
+            if (sol.ShadowPrices != null && sol.ShadowPrices.Count == model.Constraints.Count)
+            {
+                Console.WriteLine("Shadow prices (dual variables):");
+                for (int i = 0; i < model.Constraints.Count; i++)
+                    Console.WriteLine($"  y[{i}] = {sol.ShadowPrices[i]:F6}");
+                Pause();
+                return;
+            }
+
+            Console.WriteLine("(Approximated) Shadow prices via \u0394b -> \u0394z / \u0394b:");
+            double eps = 1e-5;
+            double baseZ = sol.ObjectiveValue;
+            for (int i = 0; i < model.Constraints.Count; i++)
+            {
+                double b0 = model.Constraints[i].RHS;
+                model.Constraints[i].RHS = b0 + eps;
+                var (sol2, _) = Solve(baseModel: null, workingModel: model, solver: solver);
+                double y = (sol2.ObjectiveValue - baseZ) / eps;
+                Console.WriteLine($"  y[{i}] ≈ {y:F6}");
+                model.Constraints[i].RHS = b0; // restore
+            }
+            Pause();
+        }
+
+        private static void BuildDual(LinearModel baseModel)
+        {
+            // Construct the algebraic dual (for standard forms). For general forms, adjust mapping.
+            var dual = DualBuilder.BuildDual(baseModel);
+            Console.WriteLine("Dual model built (not solved). Summary:");
+            Console.WriteLine(DualBuilder.Summary(dual));
+            Pause();
+        }
+
+        private static void SolveDual(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var dual = DualBuilder.BuildDual(baseModel);
+            var (sol, _) = Solve(baseModel: null, workingModel: dual, solver: solver);
+            Console.WriteLine("Dual optimum:");
+            PrintSolution(sol);
+            Pause();
+        }
+
+        private static void VerifyDuality(LinearModel baseModel, ISolverAdapter solver)
+        {
+            var (pSol, _) = SolveBase(baseModel, solver);
+            var dual = DualBuilder.BuildDual(baseModel);
+            var (dSol, _) = Solve(baseModel: null, workingModel: dual, solver: solver);
+
+            Console.WriteLine($"Primal z* = {pSol.ObjectiveValue:F6}\nDual w* = {dSol.ObjectiveValue:F6}");
+            if (Math.Abs(pSol.ObjectiveValue - dSol.ObjectiveValue) < 1e-6)
+                Console.WriteLine("Strong Duality appears to hold (values match within tolerance).");
+            else if (pSol.ObjectiveValue >= dSol.ObjectiveValue)
+                Console.WriteLine("Weak Duality holds (primal ≥ dual for maximization). Values differ -> check optimality/infeasibility.");
+            else
+                Console.WriteLine("Duality check indicates an inconsistency; verify model/sense.");
+            Pause();
+        }
+
+        // ----------------------- Engine helpers -----------------------
+        private static (SolutionView solution, LinearModel workingCopy) SolveBase(LinearModel baseModel, ISolverAdapter solver)
+        {
+            // Work on a deep copy so we don't mutate the caller's model
+            var clone = ModelCloner.DeepCopy(baseModel);
+            var (sol, _) = Solve(baseModel, clone, solver);
+            return (sol, clone);
+        }
+
+        private static (SolutionView solution, object raw) Solve(LinearModel baseModel, LinearModel workingModel, ISolverAdapter solver)
+        {
+            var raw = solver.Solve(workingModel);
+            var view = SolutionView.From(raw, workingModel, solver);
+            return (view, raw);
+        }
+
+        private static string BasisSignature(SolutionView sol)
+        {
+            // Represent the basis as a stable string key (sorted names)
+            return string.Join("|", sol.BasicVariableNames.OrderBy(s => s));
+        }
+
+        /// <summary>
+        /// Find [min,max] values for a scalar parameter p such that the basis signature stays unchanged.
+        /// We move in both directions using expanding step search and back off when basis changes.
+        /// </summary>
+        private static (double minVal, double maxVal) OneDimensionalRange(
+            LinearModel model,
+            ISolverAdapter solver,
+            double current,
+            Action<double> set,
+            Func<string> basisSignature)
+        {
+            string baseSig = basisSignature();
+            double min = current, max = current;
+
+            // Search down
+            double step = Math.Max(1.0, Math.Abs(current) * 0.1);
+            for (int iter = 0; iter < 60; iter++)
+            {
+                double trial = min - step;
+                set(trial);
+                var sig = basisSignature();
+                if (sig == baseSig) { min = trial; step *= 1.8; }
+                else { step *= 0.5; if (step < 1e-8) break; }
+            }
+
+            // Restore
+            set(current);
+
+            // Search up
+            step = Math.Max(1.0, Math.Abs(current) * 0.1);
+            for (int iter = 0; iter < 60; iter++)
+            {
+                double trial = max + step;
+                set(trial);
+                var sig = basisSignature();
+                if (sig == baseSig) { max = trial; step *= 1.8; }
+                else { step *= 0.5; if (step < 1e-8) break; }
+            }
+
+            // Restore
+            set(current);
+            return (min, max);
+        }
+
+        private static void PrintSolution(SolutionView sol)
+        {
+            Console.WriteLine($"Objective: {sol.ObjectiveValue:F6}");
+            Console.WriteLine("Variables:");
+            foreach (var kv in sol.VariableValues)
+                Console.WriteLine($"  {kv.Key} = {kv.Value:F6}");
+            if (sol.ShadowPrices != null)
+            {
+                Console.WriteLine("Shadow Prices (if available):");
+                for (int i = 0; i < sol.ShadowPrices.Count; i++)
+                    Console.WriteLine($"  y[{i}] = {sol.ShadowPrices[i]:F6}");
+            }
+        }
+
+        private static int AskForVariableIndex(LinearModel model, Func<Variable, bool> predicate = null, string label = "")
+        {
+            var indices = new List<int>();
+            Console.WriteLine("\nVariables:");
+            for (int i = 0; i < model.Variables.Count; i++)
+            {
+                var v = model.Variables[i];
+                bool ok = predicate == null || predicate(v);
+                if (!ok) continue;
+                indices.Add(i);
+                Console.WriteLine($"  [{i}] {v.Name} (c={model.ObjectiveCoefficients[i]})");
+            }
+            if (indices.Count == 0) throw new InvalidOperationException("No matching variables to choose from.");
+            Console.Write("Select variable index: ");
+            int idx = ReadInt();
+            if (!indices.Contains(idx)) throw new InvalidOperationException("Index not in the allowed set.");
+            return idx;
+        }
+
+        private static int AskForConstraintIndex(LinearModel model)
+        {
+            Console.WriteLine("\nConstraints:");
+            for (int i = 0; i < model.Constraints.Count; i++)
+            {
+                var ci = model.Constraints[i];
+                Console.WriteLine($"  [{i}] RHS={ci.RHS}, sense={ci.Sense}");
+            }
+            Console.Write("Select constraint index: ");
+            int idx = ReadInt();
+            if (idx < 0 || idx >= model.Constraints.Count) throw new InvalidOperationException("Invalid constraint index.");
+            return idx;
+        }
+
+        private static int ReadInt()
+        {
+            while (true)
+            {
+                var s = Console.ReadLine();
+                if (int.TryParse(s, out int v)) return v;
+                Console.Write("Please enter an integer: ");
+            }
+        }
+        private static double ReadDouble()
+        {
+            while (true)
+            {
+                var s = Console.ReadLine();
+                if (double.TryParse(s, out double v)) return v;
+                Console.Write("Please enter a number: ");
+            }
+        }
+        private static void Pause()
+        {
+            Console.WriteLine("\nPress any key to continue...");
+            Console.ReadKey();
+        }
+
+        // ----------------------- Lightweight abstractions -----------------------
+        /// <summary>
+        /// Adapter so we can call your solver(s) without hard-coding their exact class names/APIs.
+        /// Adjust if your method signatures differ.
+        /// </summary>
+        private interface ISolverAdapter
+        {
+            object Solve(LinearModel model);
+            SolutionView Expose(object raw, LinearModel model);
+        }
+
+        private static ISolverAdapter TryMakeBestSolver()
+        {
+            // Prefer RevisedSimplexSolver if present; fall back to PrimalSimplexSolver.
+            try { return new RevisedAdapter(); } catch { /* ignore */ }
+            try { return new PrimalAdapter(); } catch { /* ignore */ }
             return null;
         }
 
-        private double[,] ConvertTo2DDoubleArray(object val)
+        private class RevisedAdapter : ISolverAdapter
         {
-            if (val == null) return null;
-            // try double[][]
-            if (val is double[][] darr) // jagged
-            {
-                int r = darr.Length;
-                int c = darr[0].Length;
-                var mat = new double[r, c];
-                for (int i = 0; i < r; i++)
-                    for (int j = 0; j < c; j++)
-                        mat[i, j] = darr[i][j];
-                return mat;
-            }
-
-            if (val is double[,] d2)
-            {
-                return d2;
-            }
-
-            // try object[][] or IEnumerable<IEnumerable<object>>
-            if (val is IEnumerable<IEnumerable<object>> e)
-            {
-                var rows = e.Select(row => row.Select(o => Convert.ToDouble(o)).ToArray()).ToArray();
-                int r = rows.Length, c = rows[0].Length;
-                var mat = new double[r, c];
-                for (int i = 0; i < r; i++)
-                    for (int j = 0; j < c; j++)
-                        mat[i, j] = rows[i][j];
-                return mat;
-            }
-
-            return null;
+            private readonly RevisedSimplexSolver _solver;
+            public RevisedAdapter() { _solver = new RevisedSimplexSolver(); }
+            public object Solve(LinearModel model) => _solver.Solve(model);
+            public SolutionView Expose(object raw, LinearModel model) => SolutionView.From(raw, model, this);
         }
-
-        private int[] FindUnitColumnIndices(double[,] mat)
+        private class PrimalAdapter : ISolverAdapter
         {
-            if (mat == null) return null;
-            int rows = mat.GetLength(0);
-            int cols = mat.GetLength(1);
-            var unitCols = new List<int>();
-            for (int c = 0; c < cols; c++)
-            {
-                int oneCount = 0;
-                int idxOne = -1;
-                int nonZeroCount = 0;
-                for (int r = 0; r < rows; r++)
-                {
-                    double v = mat[r, c];
-                    if (Math.Abs(v - 1.0) < 1e-6) { oneCount++; idxOne = r; }
-                    if (Math.Abs(v) > 1e-9) nonZeroCount++;
-                }
-                if (oneCount == 1 && nonZeroCount == 1)
-                {
-                    unitCols.Add(c);
-                }
-            }
-            return unitCols.Count > 0 ? unitCols.ToArray() : null;
+            private readonly PrimalSimplexSolver _solver;
+            public PrimalAdapter() { _solver = new PrimalSimplexSolver(); }
+            public object Solve(LinearModel model) => _solver.Solve(model);
+            public SolutionView Expose(object raw, LinearModel model) => SolutionView.From(raw, model, this);
         }
 
         /// <summary>
-        /// Find allowable decrease and increase for objective coefficient at index varIndex by numeric perturbation while preserving basis.
-        /// Returns (decrease, increase) where decrease is amount you can subtract (>=0), increase is amount you can add (>=0).
-        /// If we cannot determine, returns (null, null).
+        /// A solver-agnostic view of a solution so we can print results and build basis signatures.
+        /// Map your solver's real result type here.
         /// </summary>
-        private (double? decrease, double? increase) FindCoefficientRangePreservingBasis(int varIndex, double baseCoef, object modelObject, object baseSolution)
+        private class SolutionView
         {
-            try
+            public double ObjectiveValue { get; set; }
+            public Dictionary<string, double> VariableValues { get; set; } = new();
+            public List<string> BasicVariableNames { get; set; } = new();
+            public List<double> ShadowPrices { get; set; } // optional
+
+            public static SolutionView From(object raw, LinearModel model, ISolverAdapter adapter)
             {
-                // We need a copy of the model so we don't mutate original. Try to clone (shallow) or create copy by reflection.
-                var modelCopy = TryShallowCloneModel(modelObject);
-                if (modelCopy == null)
+                // Try to reflect common patterns used in student simplex solvers
+                // Adjust this code to your actual result types if needed.
+                var view = new SolutionView();
+
+                // Heuristics: many of your solvers return BnBSimplexResult or similar with properties
+                // like ObjectiveValue, VariableValues, BasicVariables, DualValues.
+                var t = raw.GetType();
+
+                // Objective
+                var objProp = t.GetProperty("ObjectiveValue") ?? t.GetProperty("Z");
+                view.ObjectiveValue = objProp != null ? Convert.ToDouble(objProp.GetValue(raw)) : double.NaN;
+
+                // Variable values
+                var varsDictProp = t.GetProperty("VariableValues");
+                if (varsDictProp != null)
                 {
-                    writer.AppendLine($"Warning: could not clone model to check coefficient ranges for variable index {varIndex}.");
-                    return (null, null);
-                }
-
-                // find property or field for objective coefficients
-                var (prop, field) = FindModelMemberForArray(modelCopy, new[] { "ObjectiveCoefficients", "C", "ObjCoefficients", "Objective", "ObjectiveCoeff" });
-                if (prop == null && field == null) return (null, null);
-
-                // get array and ensure double[]
-                var arrObj = prop != null ? prop.GetValue(modelCopy) : field.GetValue(modelCopy);
-                var arr = ConvertToDoubleArray(arrObj);
-                if (arr == null || varIndex < 0 || varIndex >= arr.Length) return (null, null);
-
-                // helper to set coefficient and re-solve
-                Func<double, object> reSolve = (newCoef) =>
-                {
-                    var arr2 = (double[])arr.Clone();
-                    arr2[varIndex] = newCoef;
-                    if (prop != null)
+                    var dict = varsDictProp.GetValue(raw) as System.Collections.IDictionary;
+                    if (dict != null)
                     {
-                        if (prop.PropertyType == typeof(double[]))
-                            prop.SetValue(modelCopy, arr2);
-                        else
-                        {
-                            // try convert to expected array type via reflection if necessary
-                            prop.SetValue(modelCopy, arr2);
-                        }
+                        foreach (System.Collections.DictionaryEntry de in dict)
+                            view.VariableValues[de.Key.ToString()] = Convert.ToDouble(de.Value);
                     }
-                    else
-                    {
-                        field.SetValue(modelCopy, arr2);
-                    }
-                    var sol = SolveModelWithReflection(modelCopy);
-                    return sol;
-                };
-
-                // Find decrease: search until basis changes
-                double? decLimit = SearchDirectionUntilBasisChanges(baseCoef, -1, reSolve, baseSolution);
-                // Find increase
-                double? incLimit = SearchDirectionUntilBasisChanges(baseCoef, +1, reSolve, baseSolution);
-
-                return (decLimit, incLimit);
-            }
-            catch (Exception ex)
-            {
-                writer.AppendLine($"Error while computing coef range for var {varIndex}: {ex.Message}");
-                return (null, null);
-            }
-        }
-
-        /// <summary>
-        /// Find allowable decrease/increase for RHS at constraint index by re-solving.
-        /// </summary>
-        private (double? decrease, double? increase) FindRHSRangePreservingBasis(int consIndex, double baseRhs, object modelObject, object baseSolution)
-        {
-            try
-            {
-                var modelCopy = TryShallowCloneModel(modelObject);
-                if (modelCopy == null)
-                {
-                    writer.AppendLine($"Warning: could not clone model to check RHS ranges for constraint index {consIndex}.");
-                    return (null, null);
-                }
-
-                var (prop, field) = FindModelMemberForArray(modelCopy, new[] { "Rhs", "RHS", "ConstraintRHS", "B", "RightHandSide" });
-                if (prop == null && field == null) return (null, null);
-
-                var arrObj = prop != null ? prop.GetValue(modelCopy) : field.GetValue(modelCopy);
-                var arr = ConvertToDoubleArray(arrObj);
-                if (arr == null || consIndex < 0 || consIndex >= arr.Length) return (null, null);
-
-                Func<double, object> reSolve = (newRhs) =>
-                {
-                    var arr2 = (double[])arr.Clone();
-                    arr2[consIndex] = newRhs;
-                    if (prop != null) prop.SetValue(modelCopy, arr2); else field.SetValue(modelCopy, arr2);
-                    var sol = SolveModelWithReflection(modelCopy);
-                    return sol;
-                };
-
-                double? decLimit = SearchDirectionUntilBasisChanges(baseRhs, -1, reSolve, baseSolution);
-                double? incLimit = SearchDirectionUntilBasisChanges(baseRhs, +1, reSolve, baseSolution);
-
-                return (decLimit, incLimit);
-            }
-            catch (Exception ex)
-            {
-                writer.AppendLine($"Error while computing RHS range for cons {consIndex}: {ex.Message}");
-                return (null, null);
-            }
-        }
-
-        /// <summary>
-        /// Searches by multiplying a step until basis changes; returns the magnitude allowed (>=0) or null if undetermined.
-        /// direction = +1 or -1
-        /// </summary>
-        private double? SearchDirectionUntilBasisChanges(double baseValue, int direction, Func<double, object> reSolve, object baseSolution)
-        {
-            try
-            {
-                double step = PerturbationBase;
-                double lastSafe = 0.0;
-                // First do linear expansion until basis changes or limit reached
-                for (int iter = 0; iter < 80; iter++)
-                {
-                    double candidate = baseValue + direction * step;
-                    var newSol = reSolve(candidate);
-                    if (newSol == null)
-                    {
-                        // If solver failed, treat as change (conservative)
-                        break;
-                    }
-                    bool sameBasis = IsSameBasis(baseSolution, newSol);
-                    if (sameBasis)
-                    {
-                        lastSafe = step;
-                        step *= 2;
-                        if (Math.Abs(step) > LargeSearchLimit) break;
-                        continue;
-                    }
-                    else
-                    {
-                        // basis changed at step, now binary search between [lastSafe, step] to find threshold
-                        double low = lastSafe;
-                        double high = step;
-                        for (int bs = 0; bs < 40; bs++)
-                        {
-                            double mid = (low + high) / 2.0;
-                            double candidate2 = baseValue + direction * mid;
-                            var solMid = reSolve(candidate2);
-                            if (solMid == null) // treat as change
-                            {
-                                high = mid;
-                                continue;
-                            }
-                            if (IsSameBasis(baseSolution, solMid))
-                            {
-                                low = mid; // safe
-                            }
-                            else
-                            {
-                                high = mid;
-                            }
-                        }
-                        return low;
-                    }
-                }
-
-                // If we never found a change and reached limit, return lastSafe (possibly large)
-                if (Math.Abs(lastSafe) > 0)
-                {
-                    return lastSafe;
-                }
-
-                // If nothing conclusive
-                return null;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Try to clone model shallowly by creating a new instance via parameterless ctor and copying public fields/properties.
-        /// If that fails, attempt to serialize/deserialize is not performed (keeps simple).
-        /// </summary>
-        private object TryShallowCloneModel(object sourceModel)
-        {
-            if (sourceModel == null) return null;
-            var t = sourceModel.GetType();
-            try
-            {
-                var ctor = t.GetConstructor(Type.EmptyTypes);
-                object copy = null;
-                if (ctor != null)
-                {
-                    copy = ctor.Invoke(null);
                 }
                 else
                 {
-                    // try to find copy constructor (same type param)
-                    var copyCtor = t.GetConstructors().FirstOrDefault(ci =>
+                    // fallback: read from model if solver didn’t return explicit values (not ideal)
+                    for (int i = 0; i < model.Variables.Count; i++)
                     {
-                        var ps = ci.GetParameters();
-                        return ps.Length == 1 && ps[0].ParameterType == t;
-                    });
-                    if (copyCtor != null)
-                    {
-                        copy = copyCtor.Invoke(new object[] { sourceModel });
+                        string name = model.Variables[i].Name;
+                        // look for property like X_name or similar – skip in generic version
+                        view.VariableValues[name] = double.NaN;
                     }
                 }
 
-                if (copy == null) return null;
-
-                // Copy public writable properties and fields shallowly
-                foreach (var prop in t.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.CanWrite))
+                // Basic variables (for basis signature)
+                var basicProp = t.GetProperty("BasicVariables") ?? t.GetProperty("Basis");
+                if (basicProp != null)
                 {
-                    try
+                    var list = basicProp.GetValue(raw) as System.Collections.IEnumerable;
+                    if (list != null)
                     {
-                        var val = prop.GetValue(sourceModel);
-                        // If array, clone array to avoid mutating original
-                        if (val is Array arr)
-                        {
-                            var cloned = (Array)arr.Clone();
-                            prop.SetValue(copy, cloned);
-                        }
-                        else
-                        {
-                            prop.SetValue(copy, val);
-                        }
+                        foreach (var item in list) view.BasicVariableNames.Add(item.ToString());
                     }
-                    catch { /* ignore copy failures for individual props */ }
                 }
-
-                foreach (var field in t.GetFields(BindingFlags.Public | BindingFlags.Instance))
+                else
                 {
-                    try
-                    {
-                        var val = field.GetValue(sourceModel);
-                        if (val is Array arr)
-                        {
-                            var cloned = (Array)arr.Clone();
-                            field.SetValue(copy, cloned);
-                        }
-                        else
-                        {
-                            field.SetValue(copy, val);
-                        }
-                    }
-                    catch { }
+                    // fallback: treat positive-valued variables as basic (rough heuristic)
+                    foreach (var kv in view.VariableValues)
+                        if (!double.IsNaN(kv.Value) && Math.Abs(kv.Value) > 1e-9) view.BasicVariableNames.Add(kv.Key);
                 }
 
-                return copy;
-            }
-            catch
-            {
-                return null;
+                // Shadow prices / duals (optional)
+                var dualProp = t.GetProperty("DualValues") ?? t.GetProperty("ShadowPrices");
+                if (dualProp != null)
+                {
+                    var list = dualProp.GetValue(raw) as System.Collections.IEnumerable;
+                    if (list != null)
+                    {
+                        view.ShadowPrices = new List<double>();
+                        foreach (var item in list) view.ShadowPrices.Add(Convert.ToDouble(item));
+                    }
+                }
+
+                return view;
             }
         }
 
-        /// <summary>
-        /// Find a property or field that holds an array using candidate names. Returns (PropertyInfo, FieldInfo)
-        /// </summary>
-        private (PropertyInfo prop, FieldInfo field) FindModelMemberForArray(object modelCopy, string[] candidates)
+        private static class ModelCloner
         {
-            foreach (var name in candidates)
+            public static LinearModel DeepCopy(LinearModel src)
             {
-                var p = modelCopy.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (p != null)
+                var dst = new LinearModel();
+                dst.Name = src.Name;
+                dst.IsMaximization = src.IsMaximization;
+                dst.ObjectiveCoefficients = src.ObjectiveCoefficients.ToList();
+                dst.Variables = src.Variables.Select(v => new Variable { Name = v.Name }).ToList();
+                dst.Constraints = new List<Constraint>();
+                foreach (var c in src.Constraints)
                 {
-                    var val = p.GetValue(modelCopy);
-                    if (val is Array) return (p, null);
-                    // maybe property typed object -> still attempt
-                    return (p, null);
+                    dst.Constraints.Add(new Constraint
+                    {
+                        Coefficients = c.Coefficients.ToList(),
+                        RHS = c.RHS,
+                        Sense = c.Sense
+                    });
                 }
-                var f = modelCopy.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (f != null)
-                {
-                    var val = f.GetValue(modelCopy);
-                    if (val is Array) return (null, f);
-                    return (null, f);
-                }
+                return dst;
             }
-            // as last resort attempt to find first double[] property or field
-            var doubleProp = modelCopy.GetType().GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .FirstOrDefault(p => p.PropertyType == typeof(double[]) || p.PropertyType == typeof(float[]) || p.PropertyType == typeof(int[]));
-            if (doubleProp != null) return (doubleProp, null);
-            var doubleField = modelCopy.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .FirstOrDefault(f => f.FieldType == typeof(double[]) || f.FieldType == typeof(float[]) || f.FieldType == typeof(int[]));
-            if (doubleField != null) return (null, doubleField);
-            return (null, null);
         }
 
-        #endregion
+        // ----------------------- Dual builder -----------------------
+        private static class DualBuilder
+        {
+            public static LinearModel BuildDual(LinearModel primal)
+            {
+                // This constructs a basic dual assuming primal is in standard form for a maximization with <= constraints.
+                // If your model supports >= or =, you can expand this mapping as needed (or ask the user for senses).
+                int m = primal.Constraints.Count;   // rows
+                int n = primal.Variables.Count;      // cols
+
+                var dual = new LinearModel();
+                dual.Name = (primal.Name ?? "Model") + "_DUAL";
+                dual.IsMaximization = !primal.IsMaximization; // flip
+
+                // Dual variables correspond to primal constraints
+                dual.Variables = new List<Variable>();
+                for (int i = 0; i < m; i++) dual.Variables.Add(new Variable { Name = $"y{i}" });
+
+                // Dual objective: minimize b^T y (if primal is max with <=)
+                dual.ObjectiveCoefficients = new List<double>();
+                foreach (var c in primal.Constraints) dual.ObjectiveCoefficients.Add(c.RHS);
+
+                // Dual constraints: A^T y >= c  (for primal max, <=)
+                dual.Constraints = new List<Constraint>();
+                for (int j = 0; j < n; j++)
+                {
+                    var coeffs = new List<double>();
+                    for (int i = 0; i < m; i++) coeffs.Add(primal.Constraints[i].Coefficients[j]);
+                    dual.Constraints.Add(new Constraint
+                    {
+                        Coefficients = coeffs,
+                        RHS = primal.ObjectiveCoefficients[j],
+                        Sense = ConstraintSense.GreaterOrEqual
+                    });
+                }
+
+                return dual;
+            }
+
+            public static string Summary(LinearModel model)
+            {
+                var s = $"Name: {model.Name}\n" +
+                        $"Type: {(model.IsMaximization ? "Max" : "Min")}\n" +
+                        $"Vars: {model.Variables.Count}, Cons: {model.Constraints.Count}\n";
+                s += "Objective: ";
+                for (int j = 0; j < model.ObjectiveCoefficients.Count; j++)
+                    s += (j > 0 ? ", " : "") + $"c[{model.Variables[j].Name}]={model.ObjectiveCoefficients[j]}";
+                s += "\n";
+                return s;
+            }
+        }
     }
 }
