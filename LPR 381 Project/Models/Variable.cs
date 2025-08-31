@@ -16,6 +16,8 @@ namespace LPR_381_Project.Models
         public double Coefficient { get; set; }  // Objective function coefficient
         public VarType Type { get; set; }        // Variable type
 
+        public bool IsInteger => Type == VarType.Integer || Type == VarType.Binary;
+
         // Parameterless constructor (needed for some deserialization/initialization)
         public Variable()
         {

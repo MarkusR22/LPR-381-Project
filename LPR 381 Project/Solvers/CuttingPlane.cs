@@ -1,9 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Globalization;
+using System.Linq;
+using LPR_381_Project.Models;
 
 namespace LPR_381_Project.Solvers
 {
@@ -18,477 +17,108 @@ namespace LPR_381_Project.Solvers
             public List<string> Logs;
         }
 
-
         public double Tolerance { get; set; } = 1e-9;
-        public int MaxIterations { get; set; } = 10_000;
+        public int MaxIterations { get; set; } = 10000;
         public int MaxCuts { get; set; } = 200;
 
-        public Result Solve(double[,] A, double[] b, double[] c, bool[] isInteger)
+        // ------------------------------------------------------------
+        // PUBLIC ENTRY: Solve from a LinearModel (preferred)
+        // ------------------------------------------------------------
+        public Result Solve(LinearModel model)
         {
-            if (A == null) throw new ArgumentNullException(nameof(A));
-            if (b == null) throw new ArgumentNullException(nameof(b));
-            if (c == null) throw new ArgumentNullException(nameof(c));
-            if (isInteger == null) throw new ArgumentNullException(nameof(isInteger));
+            int n = model.Variables.Count;
+            int m = model.Constraints.Count;
 
-
-            int m = A.GetLength(0);
-            int n = A.GetLength(1);
-            if (b.Length != m) throw new ArgumentException("b length ≠ rows(A)");
-            if (c.Length != n) throw new ArgumentException("c length ≠ cols(A)");
-            if (isInteger.Length != n) throw new ArgumentException("isInteger length ≠ cols(A)");
-            
-
-            int cols = n + m + 1; // vars + slacks + RHS
-            double[,] T = new double[m + 1, cols];
-
-
-            for (int j = 0; j < n; j++) T[0, j] = -c[j]; // -c for max
+            // Build A (m x n) and b
+            var A0 = new double[m, n];
+            var b0 = new double[m];
             for (int i = 0; i < m; i++)
             {
-                for (int j = 0; j < n; j++) T[i + 1, j] = A[i, j];
-                T[i + 1, n + i] = 1.0; // slack
-                T[i + 1, cols - 1] = b[i];
+                var coefs = model.Constraints[i].Coefficients;
+                for (int j = 0; j < n; j++) A0[i, j] = coefs[j];
+                b0[i] = model.Constraints[i].RHS;
             }
 
+            // Objective c
+            var c = new double[n];
+            for (int j = 0; j < n; j++) c[j] = model.Variables[j].Coefficient;
 
-            var basis = new int[m];
-            for (int i = 0; i < m; i++) basis[i] = n + i;
-
-
-            var allTableaus = new List<double[,]> { CloneMatrix(T) };
-            var logs = new List<string>();
-
-
-            // If any RHS is negative, use Dual Simplex to restore feasibility
-            bool hasNegativeRhs = false;
-            int rowsT = T.GetLength(0), colsT = T.GetLength(1);
-            for (int i = 1; i < rowsT; i++)
+            // Integer/binary mask
+            var isInt = new bool[n];
+            for (int j = 0; j < n; j++)
             {
-                if (T[i, colsT - 1] < -Tolerance) { hasNegativeRhs = true; break; }
+                var t = model.Variables[j].Type;
+                isInt[j] = (t == VarType.Integer || t == VarType.Binary);
             }
 
-            if (hasNegativeRhs)
-            {
-                // Log and fix feasibility first
-                logs.Add("=== INITIAL DUAL SIMPLEX: fixing negative RHS ===");
-                RunDualSimplex(T, basis, allTableaus, logs);
-            }
+            // Minimization → negate c
+            bool isMin = (model.Obj == Objective.Minimize);
+            if (isMin) for (int j = 0; j < n; j++) c[j] = -c[j];
 
-            // proceed with LP relaxation using Primal Simplex
-            logs.Add("=== PRIMAL SIMPLEX: LP relaxation ===");
-            RunPrimalSimplex(T, basis, allTableaus, logs);
+            var res = SolveInternal(A0, b0, c, isInt);
 
-
-
-            int cuts = 0;
-            while (true)
-            {
-                var x = ReadCurrentX(T, basis, n);
-                int fractIdx = -1;
-                for (int j = 0; j < n; j++)
-                {
-                    if (isInteger[j])
-                    {
-                        double frac = FracPart(x[j]);
-                        if (frac > 1e-7 && 1.0 - frac > 1e-7) { fractIdx = j; break; }
-                    }
-                }
-
-
-                if (fractIdx < 0)
-                {
-                    double z = T[0, cols - 1];
-                    logs.Add("All integer – cutting-plane loop terminates.");
-                    return new Result { XOpt = x, ZOpt = z, CutsAdded = cuts, Tableaus = allTableaus, Logs = logs };
-                }
-
-                if (cuts >= MaxCuts) throw new InvalidOperationException($"Reached MaxCuts={MaxCuts} but still fractional.");
-
-
-                int rowToCut = -1;
-                for (int i = 0; i < basis.Length; i++)
-                {
-                    if (basis[i] == fractIdx)
-                    {
-                        double rhs = T[i + 1, T.GetLength(1) - 1];
-                        if (IsFrac(rhs)) { rowToCut = i + 1; break; }
-                    }
-                }
-                if (rowToCut < 0)
-                {
-                    for (int i = 0; i < basis.Length; i++)
-                    {
-                        int colIdx = basis[i];
-                        if (colIdx < n && isInteger[colIdx])
-                        {
-                            double rhs = T[i + 1, T.GetLength(1) - 1];
-                            if (IsFrac(rhs)) { rowToCut = i + 1; break; }
-                        }
-                    }
-                }
-
-
-                if (rowToCut < 0)
-                {
-                    for (int i = 1; i < T.GetLength(0); i++)
-                    {
-                        double rhs = T[i, T.GetLength(1) - 1];
-                        if (IsFrac(rhs)) { rowToCut = i; break; }
-                    }
-                }
-                if (rowToCut < 0)
-                {
-                    double z = T[0, T.GetLength(1) - 1];
-                    logs.Add("No fractional RHS row found; stopping.");
-                    return new Result { XOpt = ReadCurrentX(T, basis, n), ZOpt = z, CutsAdded = cuts, Tableaus = allTableaus, Logs = logs };
-                }
-
-
-                int oldCols = T.GetLength(1);
-                int oldRows = T.GetLength(0);
-                double rhsRow = T[rowToCut, oldCols - 1];
-                double bbar = FracPart(rhsRow);
-                if (bbar <= Tolerance || 1.0 - bbar <= Tolerance)
-                {
-                    logs.Add($"[Cut skipped] Degenerate fractional part on row {rowToCut} (RHS={rhsRow}).");
-                    continue;
-                }
-
-                var Tnew = new double[oldRows + 1, oldCols + 1];
-                for (int i = 0; i < oldRows; i++)
-                    for (int j = 0; j < oldCols; j++)
-                        Tnew[i, j] = T[i, j];
-
-
-                Tnew[0, oldCols] = 0.0; // new slack not in obj
-
-
-                int newRow = oldRows;
-                int newSlackCol = oldCols;
-
-
-                for (int j = 0; j < oldCols - 1; j++)
-                {
-                    double a = T[rowToCut, j];
-                    double coeff = -FracPart(-a);
-                    if (Math.Abs(coeff) < 1e-12) coeff = 0.0;
-                    Tnew[newRow, j] = coeff;
-                }
-                Tnew[newRow, newSlackCol] = 1.0; // slack
-                Tnew[newRow, oldCols - 1] = -bbar; // RHS negative ⇒ dual-simplex friendly
-
-                T = Tnew;
-                basis = basis.Concat(new[] { newSlackCol }).ToArray();
-
-
-                allTableaus.Add(CloneMatrix(T));
-                cuts++;
-                logs.Add($"=== Added Gomory cut #{cuts} from row {rowToCut} (b̄={bbar:0.###}) – starting DUAL SIMPLEX ===");
-
-
-                RunDualSimplex(T, basis, allTableaus, logs);
-            }
+            if (isMin) res.ZOpt = -res.ZOpt;
+            return res;
         }
 
-        private void RunPrimalSimplex(double[,] T, int[] basis, List<double[,]> allTableaus, List<string> logs)
-        {
-            int rows = T.GetLength(0);
-            int cols = T.GetLength(1);
-            int iterations = 0;
-            while (true)
-            {
-                iterations++;
-                if (iterations > MaxIterations) throw new InvalidOperationException("Primal Simplex: iteration limit reached.");
-
-
-                int enter = -1; double minRC = +0.0;
-                for (int j = 0; j < cols - 1; j++)
-                {
-                    double rc = T[0, j];
-                    if (rc < minRC - Tolerance) { minRC = rc; enter = j; }
-                }
-                if (enter < 0)
-                {
-                    logs.Add("[Primal] Optimal (no negative reduced costs).");
-                    break;
-                }
-
-                int leave = -1; double bestRatio = double.PositiveInfinity;
-                for (int i = 1; i < rows; i++)
-                {
-                    double aij = T[i, enter];
-                    if (aij > Tolerance)
-                    {
-                        double rhs = T[i, cols - 1];
-                        double theta = rhs / aij;
-                        if (theta < bestRatio - 1e-12) { bestRatio = theta; leave = i; }
-                    }
-                }
-                if (leave < 0) throw new InvalidOperationException("Primal Simplex: Unbounded (no valid leaving row).");
-
-
-                LogIter(T, basis, "Primal", iterations, enter, leave, logs);
-                DoPivot(T, leave, enter);
-                basis[leave - 1] = enter;
-                allTableaus.Add(CloneMatrix(T));
-            }
-        }
-
-        private void RunDualSimplex(double[,] T, int[] basis, List<double[,]> allTableaus, List<string> logs)
-        {
-            int rows = T.GetLength(0);
-            int cols = T.GetLength(1);
-            int iterations = 0;
-            while (true)
-            {
-                iterations++;
-                if (iterations > MaxIterations) throw new InvalidOperationException("Dual Simplex: iteration limit reached.");
-
-
-                int leave = -1; double minRhs = +0.0;
-                for (int i = 1; i < rows; i++)
-                {
-                    double rhs = T[i, cols - 1];
-                    if (rhs < minRhs - Tolerance) { minRhs = rhs; leave = i; }
-                }
-                if (leave < 0)
-                {
-                    logs.Add("[Dual] Feasible again (all RHS ≥ 0). Done.");
-                    break;
-                }
-
-                int enter = -1; double best = double.PositiveInfinity;
-                for (int j = 0; j < cols - 1; j++)
-                {
-                    double a = T[leave, j];
-                    if (a < -Tolerance)
-                    {
-                        double rc = T[0, j];
-                        double ratio = rc / a;
-                        if (ratio < best - 1e-12) { best = ratio; enter = j; }
-                    }
-                }
-                if (enter < 0) throw new InvalidOperationException("Dual Simplex: Infeasible (no entering col with negative in pivot row).");
-
-
-                LogIter(T, basis, "Dual", iterations, enter, leave, logs);
-                DoPivot(T, leave, enter);
-                basis[leave - 1] = enter;
-                allTableaus.Add(CloneMatrix(T));
-            }
-        }
-
-        private void DoPivot(double[,] T, int pivotRow, int pivotCol)
-        {
-            int rows = T.GetLength(0);
-            int cols = T.GetLength(1);
-            double piv = T[pivotRow, pivotCol];
-            if (Math.Abs(piv) < 1e-14) throw new InvalidOperationException("Zero pivot encountered.");
-
-
-            for (int j = 0; j < cols; j++) T[pivotRow, j] /= piv;
-            for (int i = 0; i < rows; i++)
-            {
-                if (i == pivotRow) continue;
-                double f = T[i, pivotCol];
-                if (Math.Abs(f) <= 1e-14) continue;
-                for (int j = 0; j < cols; j++) T[i, j] -= f * T[pivotRow, j];
-            }
-            ZeroSmallEntries(T);
-        }
-
-        private void ZeroSmallEntries(double[,] T)
-        {
-            int rows = T.GetLength(0);
-            int cols = T.GetLength(1);
-            for (int i = 0; i < rows; i++)
-                for (int j = 0; j < cols; j++)
-                    if (Math.Abs(T[i, j]) < 1e-12) T[i, j] = 0.0;
-        }
-
-
-        private void LogIter(double[,] T, int[] basis, string phase, int iter, int enter, int leave, List<string> logs)
-        {
-            int rows = T.GetLength(0);
-            int cols = T.GetLength(1);
-            int m = basis.Length;
-            int nTotal = cols - 1;
-
-            var Bcols = new int[m];
-            for (int i = 0; i < m; i++) Bcols[i] = basis[i];
-            var B = new double[m, m];
-            for (int i = 0; i < m; i++)
-                for (int j = 0; j < m; j++)
-                    B[i, j] = T[i + 1, Bcols[j]];
-            var Binv = InvertSmallMatrix(B);
-
-
-            string rc = string.Join(", ", Enumerable.Range(0, nTotal).Select(j => $"rc[{j}]={T[0, j]:0.###}"));
-            logs.Add($"[{phase}] it{iter}: enter col {enter}, leave row {leave} | z={T[0, cols - 1]:0.###} B ^ -1 = {MatrixToString(Binv)} Reduced costs: {rc}");
-        }
-
-        private string MatrixToString(double[,] M)
-        {
-            int r = M.GetLength(0), c = M.GetLength(1);
-            var lines = new List<string>();
-            for (int i = 0; i < r; i++)
-            {
-                var row = new List<string>();
-                for (int j = 0; j < c; j++) row.Add(M[i, j].ToString("0.###", CultureInfo.InvariantCulture));
-                lines.Add(" " + string.Join(" ", row));
-            }
-            return string.Join(" ", lines);
-        }
-
-
-        private static double[,] CloneMatrix(double[,] src)
-        {
-            int r = src.GetLength(0), c = src.GetLength(1);
-            var dst = new double[r, c];
-            Array.Copy(src, dst, src.Length);
-            return dst;
-        }
-
-        private static double FracPart(double x)
-        {
-            double f = x - Math.Floor(x);
-            if (Math.Abs(f - 1.0) < 1e-12) f = 0.0;
-            return f;
-        }
-        private static bool IsFrac(double x)
-        {
-            double f = FracPart(Math.Abs(x));
-            return f > 1e-7 && 1.0 - f > 1e-7;
-        }
-
-
-        private static double[] ReadCurrentX(double[,] T, int[] basis, int nOrig)
-        {
-            int m = basis.Length;
-            int cols = T.GetLength(1);
-            var x = new double[nOrig];
-            for (int i = 0; i < m; i++)
-            {
-                int col = basis[i];
-                if (col < nOrig) x[col] = T[i + 1, cols - 1];
-            }
-
-            for (int j = 0; j < x.Length; j++) if (Math.Abs(x[j]) < 1e-12) x[j] = 0.0;
-            return x;
-        }
-
-
-        private static double[,] InvertSmallMatrix(double[,] A)
-        {
-            int n = A.GetLength(0);
-            if (n != A.GetLength(1)) throw new ArgumentException("Matrix must be square");
-            var M = new double[n, 2 * n];
-            for (int i = 0; i < n; i++)
-            {
-                for (int j = 0; j < n; j++) M[i, j] = A[i, j];
-                M[i, i + n] = 1.0;
-            }
-            for (int i = 0; i < n; i++)
-            {
-                int piv = i;
-                for (int r = i + 1; r < n; r++) if (Math.Abs(M[r, i]) > Math.Abs(M[piv, i])) piv = r;
-                if (Math.Abs(M[piv, i]) < 1e-14) throw new InvalidOperationException("Singular matrix while building B^{-1} for log.");
-                if (piv != i) SwapRows(M, i, piv);
-
-
-                double diag = M[i, i];
-                for (int j = 0; j < 2 * n; j++) M[i, j] /= diag;
-                for (int r = 0; r < n; r++)
-                {
-                    if (r == i) continue;
-                    double f = M[r, i];
-                    if (Math.Abs(f) <= 1e-14) continue;
-                    for (int j = 0; j < 2 * n; j++) M[r, j] -= f * M[i, j];
-                }
-            }
-            var inv = new double[n, n];
-            for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) inv[i, j] = M[i, j + n];
-            return inv;
-        }
-
-        private static void SwapRows(double[,] M, int r1, int r2)
-        {
-            int c = M.GetLength(1);
-            for (int j = 0; j < c; j++) { double tmp = M[r1, j]; M[r1, j] = M[r2, j]; M[r2, j] = tmp; }
-        }
-
-
-        // Quick parser for the brief's example format
-        // Robust parser that accepts "<= 40" and "<=40" (and >=, =<, =>)
-        // C# 7.3 compatible (no index-from-end operator and no newer features)
+        // ------------------------------------------------------------
+        // OPTIONAL: Solve from the brief’s simple format
+        //   First line: max|min c1 c2 ...
+        //   Middle lines: "+a +b ... <=RHS" (>= flipped)
+        //   Last line: sign row e.g. "bin bin ..." (or "int")
+        // ------------------------------------------------------------
         public Result SolveFromBriefFormat(string[] rawLines)
         {
             if (rawLines == null || rawLines.Length == 0)
                 throw new ArgumentException("Input is empty.");
 
-            // Normalize: trim, drop blanks and comment lines
-            var normalized = new List<Tuple<string, int>>(); // (line, originalLineNumber)
+            // Normalize
+            var lines = new List<string>();
             for (int i = 0; i < rawLines.Length; i++)
             {
                 string s = (rawLines[i] ?? "").Trim();
                 if (s.Length == 0) continue;
                 if (s.StartsWith("#") || s.StartsWith("//")) continue;
-                normalized.Add(Tuple.Create(s, i + 1));
+                lines.Add(s);
             }
-
-            if (normalized.Count < 3)
-                throw new ArgumentException("Need at least 3 non-empty lines: objective, one constraint, and the sign row.");
+            if (lines.Count < 3)
+                throw new ArgumentException("Need at least 3 lines: objective, ≥1 constraint, sign row.");
 
             // Objective
-            string[] obj = normalized[0].Item1.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (obj.Length < 2)
-                throw new FormatException("Objective line must be: 'max|min c1 c2 ...'.");
-
-            bool isMax = string.Equals(obj[0], "max", StringComparison.OrdinalIgnoreCase);
-            bool isMin = string.Equals(obj[0], "min", StringComparison.OrdinalIgnoreCase);
-            if (!isMax && !isMin)
-                throw new FormatException("Objective line must start with 'max' or 'min'.");
-
+            var obj = SplitTokens(lines[0]);
+            bool isMax = obj[0].Equals("max", StringComparison.OrdinalIgnoreCase);
+            bool isMin = obj[0].Equals("min", StringComparison.OrdinalIgnoreCase);
+            if (!isMax && !isMin) throw new FormatException("Objective line must start with 'max' or 'min'.");
             int n = obj.Length - 1;
             var c = new double[n];
             for (int j = 0; j < n; j++) c[j] = ParseSigned(obj[j + 1]);
 
-            // Sign row is the last normalized line (no [^1] usage)
-            int lastIdx = normalized.Count - 1;
-            string[] sign = normalized[lastIdx].Item1.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (sign.Length != n)
-                throw new FormatException("Sign row must have exactly the same number of tokens as variables.");
-
+            // Sign row (last)
+            var sign = SplitTokens(lines[lines.Count - 1]);
+            if (sign.Length != n) throw new FormatException("Sign row must have n tokens.");
             var isInt = new bool[n];
             for (int j = 0; j < n; j++)
             {
                 string tok = sign[j].ToLowerInvariant();
-                isInt[j] = (tok == "int" || tok == "bin"); // others treated as continuous here
+                isInt[j] = (tok == "bin" || tok == "int");
             }
 
-            // Constraints: lines 1 .. lastIdx-1
+            // Constraints
             var constr = new List<double[]>();
             var rhsList = new List<double>();
-            for (int k = 1; k <= lastIdx - 1; k++)
+            for (int k = 1; k < lines.Count - 1; k++)
             {
-                string s = normalized[k].Item1;
-                int originalLine = normalized[k].Item2;
+                var tks = SplitTokens(lines[k]);
+                if (tks.Length < n + 1)
+                    throw new FormatException("Constraint must have n coeffs + relation/RHS.");
 
-                var tks = s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-                if (tks.Count < n + 1)
-                    throw new FormatException("Constraint must have n coeffs plus relation/RHS.");
-
-                // coefficients
                 var coeffs = new double[n];
                 for (int j = 0; j < n; j++) coeffs[j] = ParseSigned(tks[j]);
 
-                string rel;
-                string rhsTok;
-
-                if (tks.Count == n + 1)
+                string rel, rhsTok;
+                if (tks.Length == n + 1)
                 {
-                    // Relation and RHS glued together, e.g. <=40 or =>-5
-                    SplitRelRhsCombined_CSharp7(tks[n], originalLine, out rel, out rhsTok);
+                    SplitRelRhsCombined_CSharp7(tks[n], out rel, out rhsTok);
                 }
                 else
                 {
@@ -496,20 +126,18 @@ namespace LPR_381_Project.Solvers
                     rhsTok = tks[n + 1];
                 }
 
-                // normalize =< and => typos
                 rel = rel.Replace("=<", "<=").Replace("=>", ">=");
 
                 if (rel != "<=" && rel != ">=" && rel != "=")
                     throw new FormatException("Relation must be <=, >=, or =.");
 
                 double rhsVal;
-                if (!double.TryParse(rhsTok, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out rhsVal))
-                    throw new FormatException("RHS is not a valid number: '" + rhsTok + "'.");
+                if (!double.TryParse(rhsTok, NumberStyles.Float, CultureInfo.InvariantCulture, out rhsVal))
+                    throw new FormatException("Bad RHS: '" + rhsTok + "'.");
 
                 if (rel == "=")
-                    throw new NotSupportedException("Equality '=' not supported in this quick parser; convert to two inequalities or preprocess.");
+                    throw new NotSupportedException("Equality not supported in this quick parser.");
 
-                // Flip >= to <=
                 if (rel == ">=")
                 {
                     for (int j = 0; j < n; j++) coeffs[j] *= -1;
@@ -520,25 +148,419 @@ namespace LPR_381_Project.Solvers
                 rhsList.Add(rhsVal);
             }
 
-            Console.WriteLine($"(debug) constraints parsed: {constr.Count}");
-
-            // Build A, b
             var A = new double[constr.Count, n];
             for (int i = 0; i < constr.Count; i++)
-                for (int j = 0; j < n; j++)
-                    A[i, j] = constr[i][j];
-            var bArr = rhsList.ToArray();
+                for (int j = 0; j < n; j++) A[i, j] = constr[i][j];
+            var b = rhsList.ToArray();
 
-            // Min -> Max transform
-            if (isMin) { for (int j = 0; j < n; j++) c[j] *= -1; }
+            if (isMin) for (int j = 0; j < n; j++) c[j] = -c[j];
 
-            var res = Solve(A, bArr, c, isInt);
-            if (isMin) res.ZOpt *= -1;
-            return res;
+            return SolveInternal(A, b, c, isInt);
         }
 
-        // C# 7.3-friendly helper (no tuples). Splits "<=40" / "=>-5" / "=10" into rel and rhs.
-        private static void SplitRelRhsCombined_CSharp7(string token, int lineNum, out string rel, out string rhs)
+        // ------------------------------------------------------------
+        // CORE IMPLEMENTATION (tableau + Gomory cuts)
+        // ------------------------------------------------------------
+        private Result SolveInternal(double[,] A0, double[] b0, double[] c, bool[] isInteger)
+        {
+            // 1) Augment with x_j ≤ 1 for all integer variables (binary-type handling).
+            int m0 = A0.GetLength(0);
+            int n = A0.GetLength(1);
+
+            int extraRows = 0;
+            for (int j = 0; j < n; j++) if (isInteger[j]) extraRows++;
+
+            int m = m0 + extraRows;
+            var A = new double[m, n];
+            var b = new double[m];
+
+            // Copy original rows
+            for (int i = 0; i < m0; i++)
+            {
+                for (int j = 0; j < n; j++) A[i, j] = A0[i, j];
+                b[i] = b0[i];
+            }
+            // Add x_j ≤ 1 rows
+            int r = m0;
+            for (int j = 0; j < n; j++)
+            {
+                if (isInteger[j])
+                {
+                    for (int k = 0; k < n; k++) A[r, k] = 0.0;
+                    A[r, j] = 1.0;
+                    b[r] = 1.0;
+                    r++;
+                }
+            }
+
+            // 2) Build initial tableau (max form: row0 = -c)
+            int cols = n + m + 1; // vars + slacks + RHS
+            var T = new double[m + 1, cols];
+
+            for (int j = 0; j < n; j++) T[0, j] = -c[j];
+            for (int i = 0; i < m; i++)
+            {
+                for (int j = 0; j < n; j++) T[i + 1, j] = A[i, j];
+                T[i + 1, n + i] = 1.0;                   // slack
+                T[i + 1, cols - 1] = b[i];               // RHS
+            }
+
+            var basis = new int[m];
+            for (int i = 0; i < m; i++) basis[i] = n + i;
+
+            var tableaus = new List<double[,]> { CloneMatrix(T) };
+            var logs = new List<string>();
+
+            // 3) If any RHS < 0, repair feasibility with Dual Simplex
+            if (AnyNegativeRhs(T))
+            {
+                logs.Add("=== INITIAL DUAL SIMPLEX: fixing negative RHS ===");
+                RunDualSimplex(T, basis, tableaus, logs);
+            }
+
+            // 4) Primal Simplex to solve LP relaxation
+            logs.Add("=== PRIMAL SIMPLEX: LP relaxation ===");
+            RunPrimalSimplex(T, basis, tableaus, logs);
+
+            // 5) Cutting-plane loop
+            int cuts = 0;
+            while (true)
+            {
+                var x = ReadCurrentX(T, n); // original variables only
+                int fractIdx = FindFractionalIntegerIndex(x, isInteger, 1e-7);
+                if (fractIdx < 0)
+                {
+                    // Clamp tiny numeric noise on integer vars
+                    for (int j = 0; j < n; j++)
+                    {
+                        if (isInteger[j])
+                        {
+                            if (Math.Abs(x[j]) < 1e-9) x[j] = 0.0;
+                            if (Math.Abs(x[j] - 1.0) < 1e-9) x[j] = 1.0;
+                        }
+                    }
+                    return new Result
+                    {
+                        XOpt = x,
+                        ZOpt = T[0, T.GetLength(1) - 1],
+                        CutsAdded = cuts,
+                        Tableaus = tableaus,
+                        Logs = logs
+                    };
+                }
+
+                if (cuts >= MaxCuts)
+                    throw new InvalidOperationException("Reached MaxCuts but solution still fractional.");
+
+                // Try to cut from the row where that variable is basic
+                int rowToCut = FindRowOfBasicVar(basis, fractIdx);
+                // else look for any integer-basic row with fractional RHS
+                if (rowToCut < 0) rowToCut = FindRowWithFractionalRhsOfIntegerBasic(T, basis, isInteger, n);
+                // else try any row with fractional RHS
+                if (rowToCut < 0) rowToCut = FindAnyRowWithFractionalRhs(T);
+
+                if (rowToCut < 0)
+                {
+                    logs.Add("No fractional RHS row found; stopping.");
+                    return new Result
+                    {
+                        XOpt = ReadCurrentX(T, n),
+                        ZOpt = T[0, T.GetLength(1) - 1],
+                        CutsAdded = cuts,
+                        Tableaus = tableaus,
+                        Logs = logs
+                    };
+                }
+
+                // === ADD GOMORY CUT (keep RHS as last column!) ===
+                int oldRows = T.GetLength(0);
+                int oldCols = T.GetLength(1);
+                double rhs = T[rowToCut, oldCols - 1];
+                double bbar = FracPart(rhs);
+                if (bbar <= Tolerance || 1.0 - bbar <= Tolerance)
+                {
+                    logs.Add("[Cut skipped] Degenerate fractional RHS on selected row.");
+                    // try another row as fallback
+                    int another = FindAnyRowWithFractionalRhs(T, rowToCut);
+                    if (another < 0)
+                    {
+                        return new Result
+                        {
+                            XOpt = ReadCurrentX(T, n),
+                            ZOpt = T[0, oldCols - 1],
+                            CutsAdded = cuts,
+                            Tableaus = tableaus,
+                            Logs = logs
+                        };
+                    }
+                    rowToCut = another;
+                    rhs = T[rowToCut, oldCols - 1];
+                    bbar = FracPart(rhs);
+                }
+
+                // Insert new slack BEFORE RHS, copy RHS to last column
+                int newRows = oldRows + 1;
+                int newCols = oldCols + 1;
+                var Tnew = new double[newRows, newCols];
+
+                // Copy non-RHS columns (0..oldCols-2)
+                for (int i = 0; i < oldRows; i++)
+                    for (int j = 0; j <= oldCols - 2; j++)
+                        Tnew[i, j] = T[i, j];
+
+                // New slack col index
+                int newSlackCol = oldCols - 1;
+                for (int i = 0; i < oldRows; i++) Tnew[i, newSlackCol] = 0.0;
+                Tnew[0, newSlackCol] = 0.0; // objective coeff
+
+                // Copy RHS (old last col) to new last col
+                int rhsColNew = newCols - 1;
+                for (int i = 0; i < oldRows; i++) Tnew[i, rhsColNew] = T[i, oldCols - 1];
+
+                // Build cut row at index (oldRows)
+                int cutRow = oldRows;
+                for (int j = 0; j <= oldCols - 2; j++)
+                {
+                    double a = T[rowToCut, j];
+                    double coeff = -FracPart(-a); // floor(a) - a
+                    if (Math.Abs(coeff) < 1e-12) coeff = 0.0;
+                    Tnew[cutRow, j] = coeff;
+                }
+                Tnew[cutRow, newSlackCol] = 1.0;
+                Tnew[cutRow, rhsColNew] = -bbar; // negative RHS for dual-simplex
+
+                // Swap in & extend basis
+                T = Tnew;
+                basis = basis.Concat(new[] { newSlackCol }).ToArray();
+
+                tableaus.Add(CloneMatrix(T));
+                cuts++;
+                logs.Add(string.Format(CultureInfo.InvariantCulture,
+                    "=== Added Gomory cut #{0} from row {1} (b̄={2:0.###}) → DUAL SIMPLEX ===",
+                    cuts, rowToCut, bbar));
+
+                // Restore feasibility
+                RunDualSimplex(T, basis, tableaus, logs);
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Simplex kernels
+        // ------------------------------------------------------------
+        private void RunPrimalSimplex(double[,] T, int[] basis, List<double[,]> allTableaus, List<string> logs)
+        {
+            int rows = T.GetLength(0);
+            int cols = T.GetLength(1);
+            int it = 0;
+
+            while (true)
+            {
+                it++;
+                if (it > MaxIterations)
+                    throw new InvalidOperationException("Primal Simplex: iteration limit.");
+
+                // enter = most negative rc in row 0 (excluding RHS)
+                int enter = -1; double minRc = 0.0;
+                for (int j = 0; j < cols - 1; j++)
+                {
+                    double rc = T[0, j];
+                    if (rc < minRc - Tolerance) { minRc = rc; enter = j; }
+                }
+                if (enter < 0)
+                {
+                    logs.Add("[Primal] Optimal (no negative reduced costs).");
+                    break;
+                }
+
+                // leave via ratio test
+                int leave = -1; double best = double.PositiveInfinity;
+                for (int i = 1; i < rows; i++)
+                {
+                    double a = T[i, enter];
+                    if (a > Tolerance)
+                    {
+                        double theta = T[i, cols - 1] / a;
+                        if (theta < best - 1e-12) { best = theta; leave = i; }
+                    }
+                }
+                if (leave < 0) throw new InvalidOperationException("Primal Simplex: Unbounded.");
+
+                logs.Add(string.Format(CultureInfo.InvariantCulture,
+                    "[Primal] it{0}: enter {1}, leave {2} | z={3:0.###} rc_min={4:0.###}",
+                    it, enter, leave, T[0, cols - 1], minRc));
+
+                Pivot(T, leave, enter);
+                basis[leave - 1] = enter;
+                allTableaus.Add(CloneMatrix(T));
+            }
+        }
+
+        private void RunDualSimplex(double[,] T, int[] basis, List<double[,]> allTableaus, List<string> logs)
+        {
+            int rows = T.GetLength(0);
+            int cols = T.GetLength(1);
+            int it = 0;
+
+            while (true)
+            {
+                it++;
+                if (it > MaxIterations)
+                    throw new InvalidOperationException("Dual Simplex: iteration limit.");
+
+                // pick leaving row: most negative RHS
+                int leave = -1; double minRhs = 0.0;
+                for (int i = 1; i < rows; i++)
+                {
+                    double rhs = T[i, cols - 1];
+                    if (rhs < minRhs - Tolerance) { minRhs = rhs; leave = i; }
+                }
+                if (leave < 0)
+                {
+                    logs.Add("[Dual] Feasible (all RHS ≥ 0).");
+                    break;
+                }
+
+                // entering: a<0 with minimal rc/a
+                int enter = -1; double best = double.PositiveInfinity;
+                for (int j = 0; j < cols - 1; j++)
+                {
+                    double a = T[leave, j];
+                    if (a < -Tolerance)
+                    {
+                        double rc = T[0, j];
+                        double ratio = rc / a; // a<0 ⇒ candidate
+                        if (ratio < best - 1e-12) { best = ratio; enter = j; }
+                    }
+                }
+                if (enter < 0)
+                    throw new InvalidOperationException("Dual Simplex: no entering column with negative pivot row coefficient.");
+
+                Pivot(T, leave, enter);
+                basis[leave - 1] = enter;
+                allTableaus.Add(CloneMatrix(T));
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Helpers
+        // ------------------------------------------------------------
+        private static bool AnyNegativeRhs(double[,] T)
+        {
+            int rows = T.GetLength(0), cols = T.GetLength(1);
+            for (int i = 1; i < rows; i++)
+                if (T[i, cols - 1] < 0) return true;
+            return false;
+        }
+
+        private static int FindRowOfBasicVar(int[] basis, int varCol)
+        {
+            for (int i = 0; i < basis.Length; i++)
+                if (basis[i] == varCol) return i + 1; // tableau row index
+            return -1;
+        }
+
+        private static int FindRowWithFractionalRhsOfIntegerBasic(double[,] T, int[] basis, bool[] isInteger, int nOrig)
+        {
+            int rows = T.GetLength(0), cols = T.GetLength(1);
+            for (int i = 1; i < rows; i++)
+            {
+                int col = basis[i - 1];
+                if (col < nOrig && isInteger[col])
+                {
+                    double rhs = T[i, cols - 1];
+                    if (IsFrac(rhs)) return i;
+                }
+            }
+            return -1;
+        }
+
+        private static int FindAnyRowWithFractionalRhs(double[,] T, int skipRow = -1)
+        {
+            int rows = T.GetLength(0), cols = T.GetLength(1);
+            for (int i = 1; i < rows; i++)
+            {
+                if (i == skipRow) continue;
+                double rhs = T[i, cols - 1];
+                if (IsFrac(rhs)) return i;
+            }
+            return -1;
+        }
+
+        private static double[] ReadCurrentX(double[,] T, int nOrig)
+        {
+            int rows = T.GetLength(0);
+            int cols = T.GetLength(1);
+            var x = new double[nOrig];
+
+            for (int j = 0; j < nOrig; j++)
+            {
+                int pivotRow = -1;
+                bool unit = true;
+
+                for (int i = 1; i < rows; i++)
+                {
+                    double v = T[i, j];
+                    if (Math.Abs(v - 1.0) < 1e-9)
+                    {
+                        if (pivotRow >= 0) { unit = false; break; }
+                        pivotRow = i;
+                    }
+                    else if (Math.Abs(v) > 1e-9)
+                    {
+                        unit = false; break;
+                    }
+                }
+
+                if (unit && pivotRow > 0)
+                    x[j] = T[pivotRow, cols - 1];
+                else
+                    x[j] = 0.0;
+            }
+            // Clean tiny noise
+            for (int j = 0; j < nOrig; j++) if (Math.Abs(x[j]) < 1e-12) x[j] = 0.0;
+            return x;
+        }
+
+        private static void Pivot(double[,] T, int pivotRow, int pivotCol)
+        {
+            int rows = T.GetLength(0);
+            int cols = T.GetLength(1);
+            double piv = T[pivotRow, pivotCol];
+            if (Math.Abs(piv) < 1e-14) throw new InvalidOperationException("Zero pivot.");
+
+            // scale pivot row
+            for (int j = 0; j < cols; j++) T[pivotRow, j] /= piv;
+
+            // eliminate other rows
+            for (int i = 0; i < rows; i++)
+            {
+                if (i == pivotRow) continue;
+                double f = T[i, pivotCol];
+                if (Math.Abs(f) <= 1e-14) continue;
+                for (int j = 0; j < cols; j++) T[i, j] -= f * T[pivotRow, j];
+            }
+
+            // zero tiny noise
+            int R = T.GetLength(0), C = T.GetLength(1);
+            for (int i = 0; i < R; i++)
+                for (int j = 0; j < C; j++)
+                    if (Math.Abs(T[i, j]) < 1e-12) T[i, j] = 0.0;
+        }
+
+        private static double[,] CloneMatrix(double[,] src)
+        {
+            int r = src.GetLength(0), c = src.GetLength(1);
+            var dst = new double[r, c];
+            Array.Copy(src, dst, src.Length);
+            return dst;
+        }
+
+        private static string[] SplitTokens(string s)
+        {
+            return s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        private static void SplitRelRhsCombined_CSharp7(string token, out string rel, out string rhs)
         {
             token = (token ?? "").Trim();
             if (token.StartsWith("<=")) { rel = "<="; rhs = token.Substring(2); return; }
@@ -546,15 +568,39 @@ namespace LPR_381_Project.Solvers
             if (token.StartsWith(">=")) { rel = ">="; rhs = token.Substring(2); return; }
             if (token.StartsWith("=>")) { rel = ">="; rhs = token.Substring(2); return; }
             if (token.StartsWith("=")) { rel = "="; rhs = token.Substring(1); return; }
-            throw new FormatException("Could not parse relation/RHS on line " + lineNum + ": '" + token + "'. Expected forms like '<=40' or '>=-5'.");
+            throw new FormatException("Bad relation/RHS token: '" + token + "'. Use forms like '<=40' or '>=-5'.");
         }
-
-
 
         private static double ParseSigned(string token)
         {
             token = token.Trim();
             return double.Parse(token, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture);
+        }
+
+        private static double FracPart(double x)
+        {
+            // Always positive fractional part in [0,1)
+            double f = x - Math.Floor(x);
+            if (Math.Abs(f - 1.0) < 1e-12) f = 0.0;
+            return f;
+        }
+
+        private static bool IsFrac(double x)
+        {
+            double f = FracPart(Math.Abs(x));
+            return f > 1e-7 && 1.0 - f > 1e-7;
+        }
+
+        private static int FindFractionalIntegerIndex(double[] x, bool[] isInt, double tol)
+        {
+            for (int j = 0; j < x.Length; j++)
+            {
+                if (!isInt[j]) continue;
+                double f = x[j] - Math.Floor(x[j]);
+                double dist = Math.Min(f, 1.0 - f);
+                if (dist > tol) return j;
+            }
+            return -1;
         }
     }
 }

@@ -9,17 +9,28 @@ using System.Threading.Tasks;
 namespace LPR_381_Project.Sensitivity
 {
     
+    /// A defensive sensitivity analysis helper that tries to integrate with the repository's
+    /// LinearModel and RevisedSimplexSolver. It will:
+    ///  - solve the model using the solver found in the assembly
+    ///  - extract variable values, objective value, reduced costs, shadow prices
+    ///  - compute basis-preserving allowable increase/decrease ranges numerically
+    /// 
+    /// The class deliberately uses reflection to adapt to different repository APIs.
+    /// The final textual report is exposed through the Writer property.
+    /// </summary>
     public class SensitivityAnalyzer
     {
         private const double Tolerance = 1e-9;
         private const double LargeSearchLimit = 1e6;
         private const double PerturbationBase = 1e-6;
 
+        // The StringBuilder must be called "writer" per user request.
         private readonly StringBuilder writer = new StringBuilder();
 
-       
+        // Expose a convenient property for the finished report
         public string Writer => writer.ToString();
-        
+
+        // The model object (from repository). We keep it as object because we don't know exact type.
         private readonly object model;
 
         private readonly object solverInstance;
@@ -29,6 +40,7 @@ namespace LPR_381_Project.Sensitivity
         {
             this.model = linearModel ?? throw new ArgumentNullException(nameof(linearModel));
 
+            // Find a RevisedSimplexSolver-like type in loaded assemblies (search current assembly first)
             (solverInstance, solveMethod) = CreateSolverInstanceAndMethod();
             if (solverInstance == null || solveMethod == null)
             {
@@ -37,7 +49,9 @@ namespace LPR_381_Project.Sensitivity
             }
         }
 
-       
+        /// <summary>
+        /// Main entry: perform analysis and populate writer.
+        /// </summary>
         public void Analyze()
         {
             writer.Clear();
@@ -54,6 +68,7 @@ namespace LPR_381_Project.Sensitivity
                 baseSolution = SolveModelWithReflection(model);
             }
 
+            // Extract primary results from either model or solver
             var varNames = TryGetVariableNames(model);
             var objectiveCoeffs = TryGetObjectiveCoefficients(model);
             var constraintRHS = TryGetConstraintRHS(model);
@@ -90,7 +105,7 @@ namespace LPR_381_Project.Sensitivity
                 writer.AppendLine();
             }
 
-            // Reduced costs & shadow prices: attempt to get from baseSolution
+            // Reduced costs & shadow prices: attempt to get from baseSolution then fallback to tableau or model
             double[] reducedCosts = TryExtractReducedCosts(baseSolution);
             double[] shadowPrices = TryExtractShadowPrices(baseSolution);
 
@@ -126,7 +141,7 @@ namespace LPR_381_Project.Sensitivity
                 writer.AppendLine();
             }
 
-            // Allowable increase/decrease: numeric basis-preserving search via re-solving (if solver available)
+            // Allowable increase/decrease: numeric basis-preserving search via re-solving
             if (solveMethod != null)
             {
                 writer.AppendLine("Computing basis-preserving allowable increases/decreases (numeric re-solve).");
@@ -178,10 +193,7 @@ namespace LPR_381_Project.Sensitivity
 
         #region Reflection & helper methods
 
-        /// <summary>
-        /// Try to find a RevisedSimplexSolver-like type with a parameterless ctor and a Solve(model) method.
-        /// Returns tuple (instance, MethodInfo for Solve).
-        /// </summary>
+        
         private (object instance, MethodInfo solveMethod) CreateSolverInstanceAndMethod()
         {
             // Search loaded assemblies for a type named RevisedSimplexSolver or RevisedPrimalSimplex or SimplexSolver

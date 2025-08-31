@@ -204,9 +204,9 @@ namespace LPR_381_Project.Menus
         static void RunCuttingPlane()
         {
             var inputPath = AskInputPath();
-            var lines = File.ReadAllLines(inputPath);
+            var model = InputFileParser.ParseFile(inputPath);  
             var solver = new CuttingPlane();
-            var res = solver.SolveFromBriefFormat(lines);
+            var res = solver.Solve(model);
 
             var outPath = NewOutputPath("CuttingPlane");
             using (var sw = new StreamWriter(outPath, false, Encoding.UTF8))
@@ -229,7 +229,12 @@ namespace LPR_381_Project.Menus
                     sw.WriteLine();
                 }
             }
-            PauseDone(outPath);
+            // After solving and writing output
+            string outputPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "output.txt");
+            Console.WriteLine($"\nSolution written to {outPath}");
+            Console.WriteLine("Press any key to return to menu...");
+            Console.ReadKey();
+
         }
 
         static void RunKnapsack()
@@ -261,7 +266,21 @@ namespace LPR_381_Project.Menus
 
         static void RunSensitivity()
         {
-            // Minimal placeholders so the menu option exists; wire to your Sensitivity utilities later.
+            string inputPath = Path.Combine(ProjectRoot(), "Input", "sample.txt");
+
+    
+        var model = InputFileParser.Parse(inputPath);
+
+        var analyzer = new LPR_381_Project.Sensitivity.SensitivityAnalyzer(model);
+        analyzer.Analyze();
+
+        string outPath = NewOutputPath("Sensitivity");
+        File.WriteAllText(outPath, analyzer.Writer, Encoding.UTF8);
+
+        Console.WriteLine("Sensitivity analysis written to: " + outPath);
+        Console.ReadKey();
+
+            /* Minimal placeholders so the menu option exists; wire to your Sensitivity utilities later.
             var outPath = NewOutputPath("Sensitivity");
             using (var sw = new StreamWriter(outPath, false, Encoding.UTF8))
             {
@@ -274,7 +293,7 @@ namespace LPR_381_Project.Menus
                 sw.WriteLine("- Shadow prices");
                 sw.WriteLine("- Dual model / Strong–Weak duality checks");
             }
-            PauseDone(outPath);
+            // PauseDone(outPath);*/
         }
     }
 }
