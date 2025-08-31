@@ -1,0 +1,8 @@
+﻿Sensitivity Analysis (placeholders)
+- Range of a selected non-basic variable
+- Change a selected non-basic variable
+- Range of a selected basic variable
+- RHS ranges & changes
+- Add new activity/constraint
+- Shadow prices
+- Dual model / Strong–Weak duality checks

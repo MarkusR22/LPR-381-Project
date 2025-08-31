@@ -8,32 +8,20 @@ using System.Threading.Tasks;
 
 namespace LPR_381_Project.Sensitivity
 {
-    /// <summary>
-    /// A defensive sensitivity analysis helper that tries to integrate with the repository's
-    /// LinearModel and RevisedSimplexSolver. It will:
-    ///  - solve the model using the solver found in the assembly
-    ///  - extract variable values, objective value, reduced costs, shadow prices
-    ///  - compute basis-preserving allowable increase/decrease ranges numerically
-    /// 
-    /// The class deliberately uses reflection to adapt to different repository APIs.
-    /// The final textual report is exposed through the Writer property.
-    /// </summary>
+    
     public class SensitivityAnalyzer
     {
         private const double Tolerance = 1e-9;
         private const double LargeSearchLimit = 1e6;
         private const double PerturbationBase = 1e-6;
 
-        // The StringBuilder must be called "writer" per user request.
         private readonly StringBuilder writer = new StringBuilder();
 
-        // Expose a convenient property for the finished report
+       
         public string Writer => writer.ToString();
-
-        // The model object (from repository). We keep it as object because we don't know exact type.
+        
         private readonly object model;
 
-        // The solver instance found via reflection (if any)
         private readonly object solverInstance;
         private readonly MethodInfo solveMethod;
 
@@ -41,7 +29,6 @@ namespace LPR_381_Project.Sensitivity
         {
             this.model = linearModel ?? throw new ArgumentNullException(nameof(linearModel));
 
-            // Find a RevisedSimplexSolver-like type in loaded assemblies (search current assembly first)
             (solverInstance, solveMethod) = CreateSolverInstanceAndMethod();
             if (solverInstance == null || solveMethod == null)
             {
@@ -50,9 +37,7 @@ namespace LPR_381_Project.Sensitivity
             }
         }
 
-        /// <summary>
-        /// Main entry: perform analysis and populate writer.
-        /// </summary>
+       
         public void Analyze()
         {
             writer.Clear();
@@ -60,17 +45,15 @@ namespace LPR_381_Project.Sensitivity
             writer.AppendLine($"Generated: {DateTime.UtcNow:u}");
             writer.AppendLine();
 
-            // Print basic model info (attempt)
+            
             PrintModelSummary();
 
-            // Solve original model (if solver available)
             object baseSolution = null;
             if (solveMethod != null)
             {
                 baseSolution = SolveModelWithReflection(model);
             }
 
-            // Extract primary results from either model or solver
             var varNames = TryGetVariableNames(model);
             var objectiveCoeffs = TryGetObjectiveCoefficients(model);
             var constraintRHS = TryGetConstraintRHS(model);
@@ -107,7 +90,7 @@ namespace LPR_381_Project.Sensitivity
                 writer.AppendLine();
             }
 
-            // Reduced costs & shadow prices: attempt to get from baseSolution then fallback to tableau or model
+            // Reduced costs & shadow prices: attempt to get from baseSolution
             double[] reducedCosts = TryExtractReducedCosts(baseSolution);
             double[] shadowPrices = TryExtractShadowPrices(baseSolution);
 
